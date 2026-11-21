@@ -10,6 +10,8 @@ var target_distance := 78.0
 var current_distance := 78.0
 var target_yaw := 0.0
 var current_yaw := 0.0
+var target_pitch_offset := 0.0
+var current_pitch_offset := 0.0
 
 var is_panning := false
 var is_orbiting := false
@@ -22,6 +24,7 @@ var world_ref: Node3D = null
 var rail_ref: Node3D = null
 var region_idx := 0
 var selected_city_idx := -1
+var following_train_id := -1
 
 @onready var cam: Camera3D = $Camera3D
 
@@ -87,6 +90,7 @@ func get_zoom_distance() -> float:
 func focus_on_map_coords(mx: float, my: float, dist: float) -> void:
 	if not world_ref:
 		return
+	following_train_id = -1
 	var xz: Vector2 = world_ref.map_to_world_xz(mx, my)
 	target_pos = Vector3(xz.x, 0.0, xz.y)
 	target_distance = clampf(dist, MIN_DISTANCE, _max_allowed_distance())
@@ -244,6 +248,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_pan_by_screen_delta(mm.relative)
 		elif is_orbiting:
 			target_yaw -= mm.relative.x * 0.005
+			target_pitch_offset = _clamp_pitch_offset(target_pitch_offset + mm.relative.y * 0.22)
 
 	elif event is InputEventKey and event.pressed and not event.echo:
 		var k := event as InputEventKey
@@ -294,6 +299,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_R:
 				if not (rail_ref and rail_ref.tool == rail_ref.ToolMode.BUILD_STATION):
 					target_yaw = 0.0
+					target_pitch_offset = 0.0
 			KEY_L:
 				if rail_ref:
 					rail_ref.double_track = not rail_ref.double_track
@@ -310,9 +316,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				keyboard_cursor_active = true
 				_perform_primary(_active_screen_cursor())
 			KEY_ESCAPE, KEY_BACKSPACE:
+				following_train_id = -1
 				_perform_cancel()
 			KEY_HOME:
 				target_yaw = 0.0
+				target_pitch_offset = 0.0
 				focus_on_map_coords(1024.0, 740.0, 78.0)
 			KEY_H, KEY_SLASH:
 				if hud_help_panel:
@@ -338,6 +346,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _pan_by_screen_delta(delta: Vector2) -> void:
+	following_train_id = -1
 	var scale := current_distance * 0.00145
 	var right := Vector3(cos(current_yaw), 0.0, -sin(current_yaw))
 	var forward := Vector3(sin(current_yaw), 0.0, cos(current_yaw))
@@ -358,6 +367,7 @@ func _process(delta: float) -> void:
 		pan_vec.y += 1.0
 
 	if pan_vec.length_squared() > 0.0:
+		following_train_id = -1
 		keyboard_cursor_active = true
 		var speed := current_distance * (1.25 if Input.is_key_pressed(KEY_SHIFT) else 0.65)
 		pan_vec = pan_vec.normalized() * speed * delta
@@ -366,11 +376,29 @@ func _process(delta: float) -> void:
 		target_pos += right * pan_vec.x + forward * pan_vec.y
 		_clamp_target_to_map()
 
-	# Smooth continuous camera orbit (Q/E ALWAYS active, including during track laying!)
+	# Live Follow-Train camera tracking (orbit, tilt & zoom remain freely controllable!)
+	if following_train_id != -1 and rail_ref:
+		var found_tr := false
+		for tr in rail_ref.trains:
+			if int(tr["id"]) == following_train_id:
+				var loco_node = tr.get("loco", null)
+				var wp: Vector3 = loco_node.global_position if (loco_node and is_instance_valid(loco_node)) else (tr["world_pos"] as Vector3)
+				target_pos = Vector3(wp.x, 0.0, wp.z)
+				_clamp_target_to_map()
+				found_tr = true
+				break
+		if not found_tr:
+			following_train_id = -1
+
+	# Smooth continuous camera orbit (Q/E) and tilt up/down (F/V) — ALWAYS active!
 	if Input.is_key_pressed(KEY_Q):
 		target_yaw += 1.25 * delta
 	if Input.is_key_pressed(KEY_E):
 		target_yaw -= 1.25 * delta
+	if Input.is_key_pressed(KEY_F):
+		target_pitch_offset = _clamp_pitch_offset(target_pitch_offset - 36.0 * delta)
+	if Input.is_key_pressed(KEY_V):
+		target_pitch_offset = _clamp_pitch_offset(target_pitch_offset + 36.0 * delta)
 
 	# Smooth continuous keyboard zoom (+ / = / PgUp and - / PgDn)
 	var zoom_dir := 0.0
@@ -396,9 +424,11 @@ func _process(delta: float) -> void:
 			rail_ref.track_curve_angle += 1.1 * delta
 
 	var smooth := 1.0 - exp(-delta * 10.0)
-	current_pos = current_pos.lerp(target_pos, smooth)
+	var pos_smooth := (1.0 - exp(-delta * 16.0)) if following_train_id != -1 else smooth
+	current_pos = current_pos.lerp(target_pos, pos_smooth)
 	current_distance = lerpf(current_distance, target_distance, smooth)
 	current_yaw = lerpf(current_yaw, target_yaw, smooth)
+	current_pitch_offset = lerpf(current_pitch_offset, target_pitch_offset, smooth)
 
 	_apply_camera_transform()
 	if rail_ref:
@@ -413,9 +443,22 @@ func _process(delta: float) -> void:
 			_refresh_lines_panel()
 
 
+func _base_pitch_deg() -> float:
+	var zoom_t := clampf((current_distance - MIN_DISTANCE) / (95.0 - MIN_DISTANCE), 0.0, 1.0)
+	return lerpf(26.0, 76.0, pow(zoom_t, 0.65))
+
+
+func _clamp_pitch_offset(v: float) -> float:
+	var base_p := _base_pitch_deg()
+	return clampf(v, 12.0 - base_p, 86.0 - base_p)
+
+
 func _apply_camera_transform() -> void:
 	var zoom_t := clampf((current_distance - MIN_DISTANCE) / (95.0 - MIN_DISTANCE), 0.0, 1.0)
-	var pitch_deg := lerpf(26.0, 76.0, pow(zoom_t, 0.65))
+	var base_pitch_deg := _base_pitch_deg()
+	target_pitch_offset = _clamp_pitch_offset(target_pitch_offset)
+	current_pitch_offset = _clamp_pitch_offset(current_pitch_offset)
+	var pitch_deg := clampf(base_pitch_deg + current_pitch_offset, 12.0, 86.0)
 	var pitch_rad := deg_to_rad(pitch_deg)
 
 	var ground_y := 0.0
@@ -432,8 +475,13 @@ func _apply_camera_transform() -> void:
 	var cam_pos := look_target + offset
 	if world_ref:
 		var cam_ground := maxf(0.0, world_ref.sample_world_y(cam_pos.x, cam_pos.z))
-		var clearance := clampf(current_distance * 0.14, 0.03, 0.35)
-		cam_pos.y = maxf(cam_pos.y, cam_ground + clearance)
+		var clearance := clampf(current_distance * 0.10, 0.015, 0.30)
+		var min_cam_y := cam_ground + clearance
+		if cam_pos.y < min_cam_y:
+			var lift := min_cam_y - cam_pos.y
+			cam_pos.y = min_cam_y
+			# Lift look_target proportionally on steep mountain slopes so F/V tilt stays responsive!
+			look_target.y += lift * 0.85
 
 	cam.global_position = cam_pos
 	cam.look_at(look_target, Vector3.UP)
@@ -457,8 +505,14 @@ func _update_live_cursor_and_hud() -> void:
 			hud_crosshair.position = get_viewport().get_visible_rect().size * 0.5
 
 	if rail_ref and hud_status_lbl:
-		hud_status_lbl.text = "RAILDEV 3D  |  %s  |  %s" % [
-			rail_ref.formatted_date(), _format_money(rail_ref.treasury)]
+		var follow_tag := ""
+		if following_train_id != -1:
+			for tr in rail_ref.trains:
+				if int(tr["id"]) == following_train_id:
+					follow_tag = "  |  Following: %s [WASD/Esc]" % String(tr["name"])
+					break
+		hud_status_lbl.text = "RAILDEV 3D  |  %s  |  %s%s" % [
+			rail_ref.formatted_date(), _format_money(rail_ref.treasury), follow_tag]
 
 	if not world_ref:
 		return
@@ -659,7 +713,9 @@ func _build_hud() -> void:
 
 	var btn_north := Button.new()
 	btn_north.text = "North [R]"
-	btn_north.pressed.connect(func(): target_yaw = 0.0)
+	btn_north.pressed.connect(func():
+		target_yaw = 0.0
+		target_pitch_offset = 0.0)
 	row1.add_child(btn_north)
 
 	hud_region_btn = OptionButton.new()
@@ -813,7 +869,7 @@ func _build_hud() -> void:
 	vbox.add_child(hud_telemetry)
 
 	var hint := Label.new()
-	hint.text = "Pan: Drag/WASD  Zoom: Wheel/+/-  Orbit: R-Drag/Q/E  Build: Click/Enter  Tools: I/B/T/N/X/M  Speed: Space/1/2/4  Help: H"
+	hint.text = "Pan: Drag/WASD  Zoom: Wheel/+/-  Orbit/Tilt: R-Drag/Q/E/F/V  Build: Click/Enter  Tools: I/B/T/N/X/M  Speed: Space/1-4  Help: H"
 	hint.modulate = Color(0.75, 0.78, 0.82)
 	hint.add_theme_font_size_override("font_size", 11)
 	vbox.add_child(hint)
@@ -829,7 +885,7 @@ func _build_hud() -> void:
 		"Controls — Mouse / Touchpad & Keyboard\n"
 		+ "• Pan: Left/Middle-Drag, Two-Finger Pan, or hold WASD / Arrows (Shift = faster)\n"
 		+ "• Zoom: Scroll Wheel, Touchpad Pinch, or hold + / - / PgUp / PgDn\n"
-		+ "• Orbit: Right-Drag or hold Q / E (always active)  |  R = North-Up\n"
+		+ "• Orbit & Tilt: Right-Drag (X=Orbit, Y=Tilt) or hold Q/E (Orbit), F/V (Tilt Up/Down)  |  R = Reset North & Tilt\n"
 		+ "• Build / Select: Left-Click or Enter (at crosshair)  |  Cancel: Right-Click / Esc\n"
 		+ "• Tools: I (Inspect), B (Station), T (Track), N (Signals), X (Demolish), M (Lines & Trains)\n"
 		+ "• Station Rotate: hold R / Shift+R, Shift+Wheel, or HUD buttons\n"
@@ -941,14 +997,35 @@ func _refresh_lines_panel() -> void:
 			info.modulate = Color(1.0, 0.55, 0.45)
 		row.add_child(info)
 
-		var follow_btn := Button.new()
-		follow_btn.text = "Focus"
+		var focus_btn := Button.new()
+		focus_btn.text = "Focus"
 		var tr_ref = tr
-		follow_btn.pressed.connect(func():
+		var tr_id: int = int(tr["id"])
+		focus_btn.pressed.connect(func():
+			following_train_id = -1
 			var wp: Vector3 = tr_ref["world_pos"]
 			target_pos = Vector3(wp.x, 0.0, wp.z)
 			target_distance = 14.0
-			_clamp_target_to_map())
+			_clamp_target_to_map()
+			_refresh_lines_panel())
+		row.add_child(focus_btn)
+
+		var follow_btn := Button.new()
+		var is_following := (following_train_id == tr_id)
+		follow_btn.text = "Following" if is_following else "Follow"
+		if is_following:
+			follow_btn.modulate = Color(0.55, 1.0, 0.65)
+		follow_btn.pressed.connect(func():
+			if following_train_id == tr_id:
+				following_train_id = -1
+			else:
+				following_train_id = tr_id
+				var loco_node = tr_ref.get("loco", null)
+				var wp: Vector3 = loco_node.global_position if (loco_node and is_instance_valid(loco_node)) else (tr_ref["world_pos"] as Vector3)
+				target_pos = Vector3(wp.x, 0.0, wp.z)
+				target_distance = minf(target_distance, 1.35)
+				_clamp_target_to_map()
+			_refresh_lines_panel())
 		row.add_child(follow_btn)
 
 

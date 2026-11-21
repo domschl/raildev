@@ -9,6 +9,8 @@ uniform sampler2D inset_albedo_tex : source_color, filter_linear_mipmap, repeat_
 uniform sampler2D inset2_albedo_tex : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2D inset_water_tex : filter_linear_mipmap, repeat_disable;
 uniform sampler2D inset2_water_tex : filter_linear_mipmap, repeat_disable;
+uniform sampler2D inset_landuse_tex : filter_linear_mipmap, repeat_disable;
+uniform sampler2D inset2_landuse_tex : filter_linear_mipmap, repeat_disable;
 uniform sampler2D splat_tex  : filter_linear, repeat_disable;
 uniform sampler2D urban_tex  : filter_linear_mipmap, repeat_disable;
 
@@ -17,6 +19,11 @@ uniform sampler2D tex_grass_med   : source_color, filter_linear_mipmap, repeat_e
 uniform sampler2D tex_rock        : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D tex_forest      : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D tex_urban       : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_grass_n     : hint_normal,  filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_forest_n    : hint_normal,  filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_rock_n      : hint_normal,  filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_cobble      : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_cobble_n    : hint_normal,  filter_linear_mipmap, repeat_enable;
 
 uniform vec2 world_size = vec2(204.8, 153.6);
 uniform vec2 height_texel = vec2(0.00024414, 0.00032552);
@@ -29,6 +36,8 @@ uniform float has_inset_albedo = 0.0;
 uniform float has_inset2_albedo = 0.0;
 uniform float has_inset_water = 0.0;
 uniform float has_inset2_water = 0.0;
+uniform float has_inset_landuse = 0.0;
+uniform float has_inset2_landuse = 0.0;
 uniform float land_height_scale = 0.00018;
 uniform float sea_depth_scale = 0.00022;
 instance uniform vec4 chunk_uv_rect = vec4(0.0, 0.0, 1.0, 1.0);
@@ -83,6 +92,32 @@ vec3 sample_non_repeating(sampler2D tex, vec2 uv, float scale) {
     vec2 uv2 = (rot * uv) * (scale * 0.73) + vec2(0.37, 0.61);
     float blend = smoothstep(0.25, 0.75, vnoise(uv * 11.0 + vec2(4.2, 9.1)));
     return mix(texture(tex, uv1).rgb, texture(tex, uv2).rgb, blend * 0.55);
+}
+
+// Stochastic hash-rotated 4-corner sampler (Inigo Quilez technique):
+// Every cell gets a unique random rotation & UV offset with exact dFdx/dFdy mipmaps -> ZERO visible repetition!
+vec3 sample_stochastic(sampler2D tex, vec2 uv) {
+    vec2 i = floor(uv);
+    vec2 f = fract(uv);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    vec2 dx = dFdx(uv);
+    vec2 dy = dFdy(uv);
+
+    vec3 acc = vec3(0.0);
+    for (int cy = 0; cy <= 1; cy++) {
+        for (int cx = 0; cx <= 1; cx++) {
+            vec2 cell = i + vec2(float(cx), float(cy));
+            float ang = hash21(cell * 1.13 + vec2(3.7, 9.2)) * 6.2831853;
+            float ca = cos(ang);
+            float sa = sin(ang);
+            mat2 rm = mat2(vec2(ca, -sa), vec2(sa, ca));
+            vec2 off = vec2(hash21(cell + vec2(17.3, 5.1)), hash21(cell + vec2(43.1, 29.7)));
+            vec2 suv = rm * uv + off;
+            float w = (cx == 0 ? (1.0 - u.x) : u.x) * (cy == 0 ? (1.0 - u.y) : u.y);
+            acc += textureGrad(tex, suv, rm * dx, rm * dy).rgb * w;
+        }
+    }
+    return acc;
 }
 
 // Photorealistic procedural Alpine granite + limestone strata (zero inked outline artifacts up close!)
@@ -380,21 +415,122 @@ void fragment() {
         albedo = mix(albedo, sat_col, sat_w * step(-1.0, elev));
     }
 
-    // 4c. Close-up high-frequency ground micro-detail (sharpens 40m/px satellite imagery when zoomed in!)
+    // 4c. Close-Up Satellite-Driven PBR Ground Synthesis:
+    //     At strategic/regional zoom (cam_dist > 5.2), authentic Sentinel-2 imagery shines 100%.
+    //     As you zoom into close-up diorama mode, smoothly replace the blurry 40m/px satellite pixels
+    //     with 100% crisp, house-scale, normal-mapped PBR ground textures (meadow grass, mossy forest floor,
+    //     dry pasture/farmland, Alpine rock, snow & European cobblestones) classified by the satellite
+    //     colors + regional landuse mask + slope, with organic height-weighted transitions!
     float cam_dist = length(CAMERA_POSITION_WORLD - v_world_pos);
-    float close_w = smoothstep(5.5, 0.8, cam_dist) * step(0.5, elev);
+    float close_w = smoothstep(5.2, 1.45, cam_dist) * step(0.5, elev);
+    float micro_rough_mod = 0.0;
     if (close_w > 0.01) {
         vec2 wp = v_world_pos.xz;
-        float m1 = vnoise(wp * 95.0);
-        float m2 = vnoise(wp * 240.0 + vec2(4.7, 9.2));
-        float m3 = vnoise(wp * 540.0 + vec2(11.3, 2.8));
-        float m_h = m1 * 0.50 + m2 * 0.32 + m3 * 0.18;
-        float eps_m = 0.004;
-        float mx = vnoise((wp + vec2(eps_m, 0.0)) * 95.0) * 0.50 + vnoise((wp + vec2(eps_m, 0.0)) * 240.0 + vec2(4.7, 9.2)) * 0.32 + vnoise((wp + vec2(eps_m, 0.0)) * 540.0 + vec2(11.3, 2.8)) * 0.18;
-        float mz = vnoise((wp + vec2(0.0, eps_m)) * 95.0) * 0.50 + vnoise((wp + vec2(0.0, eps_m)) * 240.0 + vec2(4.7, 9.2)) * 0.32 + vnoise((wp + vec2(0.0, eps_m)) * 540.0 + vec2(11.3, 2.8)) * 0.18;
-        albedo *= mix(1.0, 0.89 + 0.22 * m_h, close_w * (1.0 - snow_w * 0.65));
-        vec3 micro_n = normalize(vec3((m_h - mx) * 1.15, 1.0, (m_h - mz) * 1.15));
-        world_n = normalize(mix(world_n, normalize(world_n + vec3(micro_n.x, 0.0, micro_n.z) * 0.22), close_w));
+        float alb_lum = dot(albedo, vec3(0.299, 0.587, 0.114));
+
+        // Sample pixel-accurate regional pack landuse (R=forest, G=urban, B=roads) when available
+        vec3 hi_lu = vec3(0.0);
+        if (has_inset_landuse > 0.5 && inset_uv_rect.z > 0.0001) {
+            vec2 iuv = (v_uv - inset_uv_rect.xy) / inset_uv_rect.zw;
+            if (iuv.x >= 0.0 && iuv.x <= 1.0 && iuv.y >= 0.0 && iuv.y <= 1.0) {
+                hi_lu = max(hi_lu, texture(inset_landuse_tex, iuv).rgb);
+            }
+        }
+        if (has_inset2_landuse > 0.5 && inset2_uv_rect.z > 0.0001) {
+            vec2 iuv2 = (v_uv - inset2_uv_rect.xy) / inset2_uv_rect.zw;
+            if (iuv2.x >= 0.0 && iuv2.x <= 1.0 && iuv2.y >= 0.0 && iuv2.y <= 1.0) {
+                hi_lu = max(hi_lu, texture(inset2_landuse_tex, iuv2).rgb);
+            }
+        }
+
+        // Stochastic hash-rotated PBR sampling (larger natural tiles, ZERO visible grid repetition!)
+        vec2 g_uv = wp * 18.0;
+        vec2 f_uv = wp * 16.0;
+        vec2 r_uv = wp * 10.5;
+        vec2 c_uv = wp * 84.0;
+
+        vec3 pbr_grass  = sample_stochastic(tex_grass_north, g_uv);
+        vec3 pbr_dry    = sample_stochastic(tex_grass_med,   g_uv * 0.92);
+        vec3 pbr_forest = sample_stochastic(tex_forest,      f_uv);
+        vec3 pbr_rock   = sample_stochastic(tex_rock,        r_uv);
+        vec3 pbr_cob    = sample_stochastic(tex_cobble,      c_uv);
+
+        vec3 n_grass  = sample_stochastic(tex_grass_n,  g_uv) * 2.0 - 1.0;
+        vec3 n_forest = sample_stochastic(tex_forest_n, f_uv) * 2.0 - 1.0;
+        vec3 n_rock   = sample_stochastic(tex_rock_n,   r_uv) * 2.0 - 1.0;
+        vec3 n_cob    = sample_stochastic(tex_cobble_n, c_uv) * 2.0 - 1.0;
+
+        // Multi-scale organic fBm color variation (breaks up any uniform flat tint across meadows, woods & peaks!)
+        float var_macro = vnoise(wp * 2.6 + vec2(4.1, 8.3));
+        float var_med   = vnoise(wp * 9.5 + vec2(17.2, 3.9));
+        float var_fine  = vnoise(wp * 28.0 + vec2(9.7, 21.4));
+        float var_mix   = var_macro * 0.50 + var_med * 0.32 + var_fine * 0.18;
+        float org_edge  = (var_med - 0.5) * 0.36 + (var_fine - 0.5) * 0.22;
+
+        // Smooth, non-binary material weights driven by Sentinel-2 colors + regional landuse + slope
+        float sat_forest = smoothstep(0.004, 0.055, albedo.g - albedo.r) * smoothstep(0.36, 0.12, alb_lum);
+        float w_forest = smoothstep(0.06, 0.88, max(sat_forest, hi_lu.r) + org_edge * 0.55);
+
+        float sat_dry = smoothstep(-0.006, 0.055, albedo.r - albedo.g) * smoothstep(0.16, 0.42, alb_lum);
+        float w_dry = smoothstep(0.12, 0.82, max(sat_dry, max(med_w * 0.65, var_macro * 0.38)) + org_edge * 0.45) * (1.0 - w_forest * 0.75);
+
+        float city_mask = smoothstep(0.08, 0.42, texture(urban_tex, v_uv).r);
+        float sat_built = smoothstep(0.042, 0.008, albedo.g - max(albedo.r, albedo.b)) * smoothstep(0.22, 0.42, alb_lum);
+        float raw_paved = max(hi_lu.g, max(hi_lu.b * 0.95, city_mask * sat_built));
+        float w_paved = smoothstep(0.16, 0.66, raw_paved + org_edge * 0.85)
+                      * (1.0 - w_forest * 0.80) * smoothstep(1400.0, 950.0, elev);
+
+        float w_rock = clamp(max(rock_w, smoothstep(0.14, 0.30, slope) * smoothstep(1350.0, 1950.0, elev)), 0.0, 1.0);
+        float w_snow = snow_w;
+
+        // Rich multi-tone natural PBR palette with organic meadow/moss/earth variation (zero binary grass-vs-forest jump!)
+        vec3 grass_base  = mix(vec3(dot(pbr_grass,  vec3(0.299, 0.587, 0.114))), pbr_grass,  0.70) * vec3(0.50, 0.59, 0.43);
+        vec3 grass_olive = grass_base * vec3(1.12, 1.02, 0.82);
+        vec3 grass_deep  = grass_base * vec3(0.76, 0.88, 0.76);
+        vec3 col_grass   = mix(grass_deep, grass_olive, smoothstep(0.22, 0.78, var_mix));
+
+        vec3 col_dry    = mix(vec3(dot(pbr_dry, vec3(0.299, 0.587, 0.114))), pbr_dry, 0.68) * vec3(0.64, 0.61, 0.48) * (0.86 + 0.28 * var_med);
+
+        // Soft woodland floor: blend stochastic mossy forest texture partway with shaded earth/grass so it merges seamlessly!
+        vec3 for_raw    = mix(vec3(dot(pbr_forest, vec3(0.299, 0.587, 0.114))), pbr_forest, 0.72) * vec3(0.62, 0.70, 0.54);
+        vec3 for_earth  = mix(vec3(0.26, 0.32, 0.21), vec3(0.36, 0.34, 0.24), var_med);
+        vec3 col_forest = mix(mix(grass_deep * 0.82, for_earth, 0.38), for_raw, 0.52);
+
+        // Geological Alpine rock: blend stochastic rock texture with procedural limestone/granite/slate strata + warm scree!
+        vec3 rock_strata = sample_triplanar_rock(v_world_pos, macro_n) * 0.58;
+        vec3 rock_tex_c  = mix(vec3(dot(pbr_rock, vec3(0.299, 0.587, 0.114))), pbr_rock, 0.65);
+        vec3 rock_warm   = rock_strata * vec3(1.12, 1.02, 0.90);
+        vec3 rock_cool   = rock_strata * vec3(0.80, 0.86, 0.94);
+        vec3 col_rock    = mix(rock_cool, rock_warm, smoothstep(0.18, 0.82, var_macro * 0.60 + var_med * 0.40))
+                         * mix(0.66, 1.32, dot(rock_tex_c, vec3(0.3, 0.59, 0.11)))
+                         * mix(1.0, 0.68, gully_w * 0.75);
+
+        vec3 col_cob    = pbr_cob * vec3(0.74, 0.72, 0.69) * (0.90 + 0.20 * var_med);
+        vec3 col_snow   = vec3(0.84, 0.86, 0.90) * (0.92 + 0.14 * dot(pbr_rock, vec3(0.3, 0.59, 0.11)));
+
+        // Subtle macro Sentinel-2 luminance/tone influence (~26%) so real parks, meadows & fields remain recognizable
+        vec3 macro_tint = mix(vec3(1.0), clamp(albedo * 2.15, vec3(0.70), vec3(1.22)), 0.26);
+
+        // Synthesize 100% crisp, non-repeating PBR close-up ground albedo + matching normal map
+        vec3 synth_alb = mix(col_grass, col_dry, w_dry);
+        synth_alb = mix(synth_alb, col_forest, w_forest);
+        synth_alb *= macro_tint;
+        synth_alb = mix(synth_alb, col_rock, w_rock);
+        synth_alb = mix(synth_alb, col_cob, w_paved);
+        synth_alb = mix(synth_alb, col_snow, w_snow);
+
+        vec3 synth_nm = mix(n_grass, mix(n_grass, n_forest, 0.65), w_forest);
+        synth_nm = mix(synth_nm, n_rock, w_rock);
+        synth_nm = mix(synth_nm, n_cob, w_paved);
+        synth_nm = mix(synth_nm, n_rock * 0.35, w_snow);
+
+        // Smoothly crossfade from blurry satellite image into 100% crisp PBR ground as camera zooms in!
+        albedo = mix(albedo, synth_alb, close_w);
+        float relief_amp = mix(0.55, 0.98, max(max(w_forest * 0.7, w_rock), w_paved)) * (1.0 - w_snow * 0.65);
+        world_n = normalize(mix(world_n, normalize(world_n + vec3(synth_nm.x, 0.0, synth_nm.y) * relief_amp), close_w));
+
+        float synth_lum = dot(synth_alb, vec3(0.299, 0.587, 0.114));
+        micro_rough_mod = mix((0.45 - synth_lum) * 0.24, -0.08, w_paved) * close_w;
     }
 
     // 5. Crisp coastal sandy/pebble beach (only in non-satellite mode)
@@ -495,7 +631,7 @@ void fragment() {
     float total_water = max(river_core, hi_w_mask);
     float total_lake = max(lake_core, hi_lake_w * hi_w_mask);
     ALBEDO = albedo * macro_tone;
-    ROUGHNESS = mix(mix(mix(0.92, 0.90, rock_w), 0.86, snow_w), mix(0.18, 0.11, total_lake), total_water);
+    ROUGHNESS = clamp(mix(mix(mix(0.92, 0.90, rock_w), 0.86, snow_w), mix(0.18, 0.11, total_lake), total_water) + micro_rough_mod * (1.0 - total_water), 0.08, 0.98);
     SPECULAR = mix(0.10, mix(0.62, 0.78, total_lake), total_water);
 
     // Transform final perturbed world-space normal into view space for Godot's PBR lighting

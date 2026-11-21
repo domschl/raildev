@@ -10,12 +10,12 @@ const SIGNAL_COST := 1200
 const TRAIN_COST := 35000
 const TRAIN_UPKEEP_MONTHLY := 1200
 const STATION_UPKEEP_MONTHLY := 150
-const DOUBLE_TRACK_OFFSET := 0.022
-const STATION_SCALE := 0.034
-const STATION_HALF_LEN := 0.042
+const DOUBLE_TRACK_OFFSET := 0.012
+const STATION_SCALE := 0.019
+const STATION_HALF_LEN := 0.024
 const KM_PER_UNIT := 15.0
-const TRAIN_SCALE := 0.028
-const CARRIAGE_SPACING := 0.038
+const TRAIN_SCALE := 0.016
+const CARRIAGE_SPACING := 0.021
 
 var world_ref: Node3D = null
 var camera_zoom_dist: float = 40.0
@@ -106,8 +106,8 @@ func setup_world(world: Node3D) -> void:
 	mesh_carriage = world._load_glb_mesh("res://assets/models/rail_carriage.glb")
 
 	mesh_steam_puff = SphereMesh.new()
-	mesh_steam_puff.radius = 0.0055
-	mesh_steam_puff.height = 0.010
+	mesh_steam_puff.radius = 0.0032
+	mesh_steam_puff.height = 0.006
 	mesh_steam_puff.radial_segments = 10
 	mesh_steam_puff.rings = 5
 	mat_steam_puff = StandardMaterial3D.new()
@@ -124,6 +124,14 @@ func setup_world(world: Node3D) -> void:
 	if rail_pbr_shader:
 		var sm := ShaderMaterial.new()
 		sm.shader = rail_pbr_shader
+		sm.set_shader_parameter("tex_ballast", world._load_texture_direct("res://textures/pbr_ballast.png"))
+		sm.set_shader_parameter("tex_ballast_n", world._load_texture_direct("res://textures/pbr_ballast_n.png"))
+		sm.set_shader_parameter("tex_wood_ties", world._load_texture_direct("res://textures/pbr_wood_ties.png"))
+		sm.set_shader_parameter("tex_wood_ties_n", world._load_texture_direct("res://textures/pbr_wood_ties_n.png"))
+		sm.set_shader_parameter("tex_metal", world._load_texture_direct("res://textures/pbr_metal.png"))
+		sm.set_shader_parameter("tex_metal_n", world._load_texture_direct("res://textures/pbr_metal_n.png"))
+		sm.set_shader_parameter("tex_wall", world._load_texture_direct("res://textures/pbr_wall_plaster.png"))
+		sm.set_shader_parameter("tex_wall_n", world._load_texture_direct("res://textures/pbr_wall_plaster_n.png"))
 		mat_solid = sm
 	else:
 		mat_solid = StandardMaterial3D.new()
@@ -351,14 +359,38 @@ func is_near_railway(world_xz: Vector2, track_clearance: float = 0.55, station_c
 		if world_xz.distance_squared_to(st["pos"]) < st_r2:
 			return true
 	var tr_r2 := track_clearance * track_clearance
+	var px := world_xz.x
+	var pz := world_xz.y
 	for e in edges.values():
-		if e.get("internal", false):
-			continue
 		var pts: Array = e["pts"]
-		for p3 in pts:
-			var p2 := Vector2((p3 as Vector3).x, (p3 as Vector3).z)
-			if world_xz.distance_squared_to(p2) < tr_r2:
+		var n := pts.size()
+		if n < 2:
+			continue
+		# Fast AABB pre-check (cached on edge dict once) so continuous segment testing stays O(1) for far edges
+		if not e.has("_aabb"):
+			var min_x := 1e9
+			var max_x := -1e9
+			var min_z := 1e9
+			var max_z := -1e9
+			for p3 in pts:
+				var v: Vector3 = p3
+				if v.x < min_x: min_x = v.x
+				if v.x > max_x: max_x = v.x
+				if v.z < min_z: min_z = v.z
+				if v.z > max_z: max_z = v.z
+			e["_aabb"] = Vector4(min_x, max_x, min_z, max_z)
+		var bb: Vector4 = e["_aabb"]
+		if px < bb.x - track_clearance or px > bb.y + track_clearance or pz < bb.z - track_clearance or pz > bb.w + track_clearance:
+			continue
+		var prev_v: Vector3 = pts[0]
+		var a2 := Vector2(prev_v.x, prev_v.z)
+		for i in range(1, n):
+			var cur_v: Vector3 = pts[i]
+			var b2 := Vector2(cur_v.x, cur_v.z)
+			var cp := Geometry2D.get_closest_point_to_segment(world_xz, a2, b2)
+			if world_xz.distance_squared_to(cp) < tr_r2:
 				return true
+			a2 = b2
 	return false
 
 
@@ -561,6 +593,7 @@ func split_edge_at_t(edge_id: int, t: float, auto_crossover: bool = true) -> int
 	e["c1"] = p0_1 + tan_start * (d1 * 0.33)
 	e["c2"] = p1_1 - tan_mid * (d1 * 0.33)
 	e["pts"] = pts1
+	e.erase("_aabb")
 	e["cum_dist"] = make_cum.call(pts1)
 	e["length_km"] = maxf(1.0, old_len * frac)
 	(nodes[old_na]["edges"] as Array).append(edge_id)
@@ -1000,12 +1033,13 @@ func find_nearest_city_catchment(pos: Vector2) -> int:
 func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 	if not world_ref:
 		return
-	var snap_r := clampf(cam_dist * 0.022, 0.045, 2.2)
-	var ring_s := clampf(cam_dist * 0.055, 0.18, 1.35)
+	var snap_r := clampf(cam_dist * 0.022, 0.032, 2.2)
+	var ring_s := clampf(cam_dist * 0.028, 0.045, 1.15)
+	var ring_y_off := clampf(cam_dist * 0.0028, 0.004, 0.10)
 	if snap_ring_inst:
-		snap_ring_inst.scale = Vector3.ONE * ring_s
+		snap_ring_inst.scale = Vector3(ring_s, ring_s * 0.30, ring_s)
 	if snap_ring_inst2:
-		snap_ring_inst2.scale = Vector3.ONE * ring_s
+		snap_ring_inst2.scale = Vector3(ring_s, ring_s * 0.30, ring_s)
 	hover_node_id = 0
 	hover_node_id2 = 0
 	hover_edge_id = 0
@@ -1028,7 +1062,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 			var sp: Vector2 = stations[hover_station_idx]["pos"]
 			var sy: float = world_ref.sample_world_y(sp.x, sp.y)
 			snap_ring_inst.material_override = mat_ghost_bad
-			snap_ring_inst.position = Vector3(sp.x, maxf(0.0, sy) + 0.14, sp.y)
+			snap_ring_inst.position = Vector3(sp.x, maxf(0.0, sy) + ring_y_off, sp.y)
 			snap_ring_inst.visible = true
 			return
 		var hit_d := find_edge_near(world_xz, snap_r)
@@ -1040,7 +1074,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 			var idx := clampi(int(round(hover_edge_t * float(pts.size() - 1))), 0, pts.size() - 1)
 			var p3: Vector3 = pts[idx]
 			snap_ring_inst.material_override = mat_ghost_bad
-			snap_ring_inst.position = p3 + Vector3(0, 0.14, 0)
+			snap_ring_inst.position = p3 + Vector3(0, ring_y_off, 0)
 			snap_ring_inst.visible = true
 		return
 
@@ -1082,8 +1116,8 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 			var cxz: Vector2 = world_ref.map_to_world_xz(float(c["x"]), float(c["y"]))
 			var cy: float = world_ref.sample_world_y(cxz.x, cxz.y)
 			var r_world := float(c["radius"]) * 0.1 * 1.55
-			city_catchment_ring_inst.position = Vector3(cxz.x, maxf(0.0, cy) + 0.12, cxz.y)
-			city_catchment_ring_inst.scale = Vector3(r_world, 0.35, r_world)
+			city_catchment_ring_inst.position = Vector3(cxz.x, maxf(0.0, cy) + ring_y_off, cxz.y)
+			city_catchment_ring_inst.scale = Vector3(r_world, clampf(cam_dist * 0.012, 0.035, 0.30), r_world)
 			city_catchment_ring_inst.material_override = mat_ghost_ok if can_place else mat_ghost_bad
 			city_catchment_ring_inst.visible = true
 		return
@@ -1094,7 +1128,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 		if hover_node_id != 0:
 			end_pos = nodes[hover_node_id]["pos"]
 			var sy: float = world_ref.sample_world_y(end_pos.x, end_pos.y)
-			snap_ring_inst.position = Vector3(end_pos.x, maxf(0.0, sy) + 0.12, end_pos.y)
+			snap_ring_inst.position = Vector3(end_pos.x, maxf(0.0, sy) + ring_y_off, end_pos.y)
 			snap_ring_inst.visible = true
 
 			# Detect stopped double-track partner node so continuing/joining snaps to BOTH rails!
@@ -1103,7 +1137,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 				if hover_node_id2 != 0:
 					var p2_pos: Vector2 = nodes[hover_node_id2]["pos"]
 					var sy2: float = world_ref.sample_world_y(p2_pos.x, p2_pos.y)
-					snap_ring_inst2.position = Vector3(p2_pos.x, maxf(0.0, sy2) + 0.12, p2_pos.y)
+					snap_ring_inst2.position = Vector3(p2_pos.x, maxf(0.0, sy2) + ring_y_off, p2_pos.y)
 					snap_ring_inst2.visible = true
 					end_pos = (end_pos + p2_pos) * 0.5
 		else:
@@ -1117,7 +1151,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 				var idx := clampi(int(round(hover_edge_t * float(pts.size() - 1))), 1, pts.size() - 2)
 				var p3: Vector3 = pts[idx]
 				end_pos = Vector2(p3.x, p3.z)
-				snap_ring_inst.position = p3 + Vector3(0, 0.12, 0)
+				snap_ring_inst.position = p3 + Vector3(0, ring_y_off, 0)
 				snap_ring_inst.visible = true
 
 				# If building a double track onto an existing double track, lock onto BOTH rails!
@@ -1127,7 +1161,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 						hover_edge_id2 = int(par["edge_id"])
 						hover_edge_t2 = clampf(float(par["t"]), 0.08, 0.92)
 						var p3_2: Vector3 = par["p3"]
-						snap_ring_inst2.position = p3_2 + Vector3(0, 0.12, 0)
+						snap_ring_inst2.position = p3_2 + Vector3(0, ring_y_off, 0)
 						snap_ring_inst2.visible = true
 						end_pos = (end_pos + Vector2(p3_2.x, p3_2.z)) * 0.5
 
@@ -1255,7 +1289,7 @@ func update_hover_and_preview(world_xz: Vector2, cam_dist: float) -> void:
 			var e = edges[hover_edge_id]
 			var p2 := _eval_bezier(e["p0"], e["c1"], e["c2"], e["p1"], hover_edge_t)
 			var sy: float = world_ref.sample_world_y(p2.x, p2.y)
-			snap_ring_inst.position = Vector3(p2.x, maxf(0.0, sy) + 0.14, p2.y)
+			snap_ring_inst.position = Vector3(p2.x, maxf(0.0, sy) + ring_y_off, p2.y)
 			snap_ring_inst.visible = true
 		return
 
@@ -1277,7 +1311,7 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 
 	# Fixed physical station-throat turnout length (~0.16u = ~4x station length) so dual tracks
 	# separate crisply right outside the station regardless of whether the line is 10 km or 300 km!
-	var taper_t := clampf(0.16 / maxf(0.10, chord), 0.006, 0.25)
+	var taper_t := clampf(0.10 / maxf(0.08, chord), 0.005, 0.25)
 	var base_steps := clampi(int(ceil(chord * 12.0)), 14, 128)
 	var t_vals: Array[float] = []
 	for i in range(base_steps + 1):
@@ -1329,9 +1363,9 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 		elif i == steps:
 			actual_p1 = pt
 		var elev: float = world_ref.sample_elevation_m(pt.x, pt.y)
-		# Sample uphill/downhill track shoulders so side-hill tracks never sink under mountains
-		var elev_l: float = world_ref.sample_elevation_m(pt.x - nrm.x * 0.025, pt.y - nrm.y * 0.025)
-		var elev_r: float = world_ref.sample_elevation_m(pt.x + nrm.x * 0.025, pt.y + nrm.y * 0.025)
+		# Slim side-slope shoulder probe matching micro-scale ballast width (keeps uphill shoulder above terrain!)
+		var elev_l: float = world_ref.sample_elevation_m(pt.x - nrm.x * 0.008, pt.y - nrm.y * 0.008)
+		var elev_r: float = world_ref.sample_elevation_m(pt.x + nrm.x * 0.008, pt.y + nrm.y * 0.008)
 		var shoulder_elev := maxf(elev, maxf(elev_l, elev_r))
 
 		var river_v := _sample_river(pt)
@@ -1353,7 +1387,7 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 		elevs.append(elev)
 		is_bridge_pt.append(on_water)
 
-		var wy: float = maxf(0.003, shoulder_elev * world_ref.LAND_HEIGHT_SCALE + 0.0012)
+		var wy: float = maxf(0.003, shoulder_elev * world_ref.LAND_HEIGHT_SCALE + 0.0022)
 		if on_water:
 			wy = maxf(wy, maxf(0.0, elev) * world_ref.LAND_HEIGHT_SCALE + 0.005)
 		clearance_y.append(wy)
@@ -1438,8 +1472,8 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 			var tangent_y := clampf(end_y + end_slope_y * (seg_len_u * float(k)), 0.015, max_peak_y)
 			target_y[idx] = lerpf(target_y[idx], tangent_y, w)
 
-	# Step 2: Tight Gaussian smoothing (sigma = 2.0) — strictly bounded by [min, max_peak_y], zero inflation!
-	var sigma := 2.0
+	# Step 2: Smooth engineered railway grade profile (sigma = 3.6, window +-10) — eliminates mountain-foothill bumps!
+	var sigma := 3.6
 	var inv_2s2 := 1.0 / (2.0 * sigma * sigma)
 	var smooth_y: Array[float] = []
 	smooth_y.resize(steps + 1)
@@ -1452,8 +1486,8 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 			continue
 		var sum_w := 0.0
 		var sum_v := 0.0
-		var j0 := maxi(0, i - 6)
-		var j1 := mini(steps, i + 6)
+		var j0 := maxi(0, i - 10)
+		var j1 := mini(steps, i + 10)
 		for j in range(j0, j1 + 1):
 			var d := float(i - j)
 			var gw := exp(-d * d * inv_2s2)
@@ -1463,20 +1497,20 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 
 	# Re-enforce exact C1 slope at i=1 and i=steps-1 for connected intermediate nodes
 	if has_start_y and steps >= 3:
-		smooth_y[1] = clampf(start_y + start_slope_y * seg_len_u, clearance_y[1] - 0.002, max_peak_y)
+		smooth_y[1] = clampf(start_y + start_slope_y * seg_len_u, clearance_y[1] - 0.003, max_peak_y)
 	if has_end_y and steps >= 3:
-		smooth_y[steps - 1] = clampf(end_y + end_slope_y * seg_len_u, clearance_y[steps - 1] - 0.002, max_peak_y)
+		smooth_y[steps - 1] = clampf(end_y + end_slope_y * seg_len_u, clearance_y[steps - 1] - 0.003, max_peak_y)
 
-	# Step 3: Take max with clearance_y (capped at max_peak_y) + 4 gentle clamped smoothing passes
-	# (never rises above max_peak_y, never drops under terrain because clearance_y has +0.004 margin)
+	# Step 3: Enforce strict terrain clearance (NEVER dip below ground!) + 8 Laplacian smoothing passes
+	# so embankments fill smoothly across dips while terrain can never poke over the tracks!
 	for i in range(1, steps):
 		var in_tun := (tunnel_entry != -1 and i >= tunnel_entry and i <= tunnel_exit)
 		if in_tun:
 			pts3[i].y = smooth_y[i]
 		else:
-			pts3[i].y = clampf(maxf(smooth_y[i], clearance_y[i] - 0.0015), clearance_y[i] - 0.0015, max_peak_y)
+			pts3[i].y = clampf(maxf(smooth_y[i], clearance_y[i]), clearance_y[i], max_peak_y)
 
-	for _pass in range(4):
+	for _pass in range(8):
 		var prev_y: Array[float] = []
 		prev_y.resize(steps + 1)
 		for i in range(steps + 1):
@@ -1487,7 +1521,7 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 			if in_tun:
 				pts3[i].y = sm
 			else:
-				pts3[i].y = clampf(maxf(sm, clearance_y[i] - 0.002), clearance_y[i] - 0.002, max_peak_y)
+				pts3[i].y = clampf(maxf(sm, clearance_y[i]), clearance_y[i], max_peak_y)
 
 	var length_km := total_len * KM_PER_UNIT
 	var base_cost := int(round(length_km * 240.0))
@@ -1694,8 +1728,8 @@ func add_station(pos: Vector2, city_idx: int, st_name: String, angle: float, tra
 	var eid := next_id
 	next_id += 1
 	var wy: float = world_ref.sample_world_y(pos.x, pos.y)
-	var p3a := Vector3(pa.x, wy + 0.0015, pa.y)
-	var p3b := Vector3(pb.x, wy + 0.0015, pb.y)
+	var p3a := Vector3(pa.x, wy + 0.0002, pa.y)
+	var p3b := Vector3(pb.x, wy + 0.0002, pb.y)
 	edges[eid] = {
 		"id": eid, "node_a": na, "node_b": nb,
 		"p0": pa, "c1": pa.lerp(pb, 0.33), "c2": pa.lerp(pb, 0.67), "p1": pb,
@@ -1835,7 +1869,7 @@ func add_signal(edge_id: int, t: float, sig_type: int, dir_sign: int = 1) -> voi
 		tan2 = Vector2.RIGHT
 	else:
 		tan2 = tan2.normalized() * float(dir_sign)
-	var right2 := Vector2(-tan2.y, tan2.x) * 0.019
+	var right2 := Vector2(-tan2.y, tan2.x) * 0.010
 	var spos := Vector2(p3.x, p3.z) + right2
 
 	var inst := MeshInstance3D.new()
@@ -1860,7 +1894,7 @@ func add_signal(edge_id: int, t: float, sig_type: int, dir_sign: int = 1) -> voi
 	inst.material_override = smat
 	inst.position = Vector3(spos.x, maxf(0.005, p3.y), spos.y)
 	inst.rotation = Vector3(0.0, -tan2.angle(), 0.0)
-	inst.scale = Vector3.ONE * 0.032
+	inst.scale = Vector3.ONE * 0.017
 	add_child(inst)
 
 	e["signals"].append({
@@ -1931,58 +1965,63 @@ func _build_track_3d(pv: Dictionary) -> Node3D:
 			fwd = fwd.normalized()
 			rights[i] = Vector3(-fwd.z, 0.0, fwd.x)
 
+	var track_dist := 0.0
 	for i in range(n - 1):
 		var a: Vector3 = pts[i]
 		var b: Vector3 = pts[i + 1]
 		var ra: Vector3 = rights[i]
 		var rb: Vector3 = rights[i + 1]
+		var seg_d := a.distance_to(b)
+		var v0 := 0.10 + track_dist * 42.0
+		var v1 := 0.10 + (track_dist + seg_d) * 42.0
+		track_dist += seg_d
 
 		var in_tunnel := (t_entry != -1 and i >= t_entry and i < t_exit)
 		if in_tunnel:
 			# Dashed translucent subterranean tunnel alignment visible through the mountain
 			if i % 2 == 0:
-				var tw := 0.009
-				var lift := Vector3(0, 0.006, 0)
+				var tw := 0.005
+				var lift := Vector3(0, 0.004, 0)
 				_emit_quad(st_tun, a - ra * tw + lift, b - rb * tw + lift, b + rb * tw + lift, a + ra * tw + lift, col_tunnel)
 				has_tun_tris = true
 			continue
 
 		var is_br: bool = bridge_flags[i] or bridge_flags[i + 1]
-		var half_bed := 0.011 if is_br else 0.009
-		var half_skirt := half_bed * 1.45
-		var y_lift := 0.0022 if is_br else 0.0007
+		var half_bed := 0.0060 if is_br else 0.0046
+		var half_skirt := half_bed * 1.38
+		var y_lift := 0.0014 if is_br else 0.0009
 		var bed_col := col_bridge if is_br else col_ballast
 		var side_col := bed_col.darkened(0.22)
 
-		# Continuous mitered ballast / stone bridge deck top (clockwise winding -> +Y normal)
+		# Continuous mitered ballast / stone bridge deck top (with track UV.y > 0.01 for gravel PBR shader!)
 		var a0 := a - ra * half_bed + Vector3(0, y_lift, 0)
 		var a1 := a + ra * half_bed + Vector3(0, y_lift, 0)
 		var b0 := b - rb * half_bed + Vector3(0, y_lift, 0)
 		var b1 := b + rb * half_bed + Vector3(0, y_lift, 0)
-		_emit_quad(st, a0, b0, b1, a1, bed_col)
+		_emit_quad_uv(st, a0, b0, b1, a1, bed_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
-		# Snug ground-hugging ballast shoulder (subtle masonry deck only on water bridges)
-		var drop_y := -0.012 if is_br else -0.0055
+		# Deep ground-hugging ballast shoulder so smoothed embankments stay solidly rooted on slopes
+		var drop_y := -0.011 if is_br else -0.0090
 		var w_side := half_bed if is_br else half_skirt * 1.15
 		var as0 := a - ra * w_side + Vector3(0, y_lift + drop_y, 0)
 		var as1 := a + ra * w_side + Vector3(0, y_lift + drop_y, 0)
 		var bs0 := b - rb * w_side + Vector3(0, y_lift + drop_y, 0)
 		var bs1 := b + rb * w_side + Vector3(0, y_lift + drop_y, 0)
-		_emit_quad(st, as0, bs0, b0, a0, side_col)
-		_emit_quad(st, a1, b1, bs1, as1, side_col)
+		_emit_quad_uv(st, as0, bs0, b0, a0, side_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(0.3, v1), Vector2(0.3, v0))
+		_emit_quad_uv(st, a1, b1, bs1, as1, side_col, Vector2(0.7, v0), Vector2(0.7, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
-		# Dark timber-sleeper center strip + twin weathered gunmetal iron rails
-		var sl := Vector3(0, y_lift + 0.0008, 0)
-		var swa: Vector3 = ra * 0.006
-		var swb: Vector3 = rb * 0.006
-		_emit_quad(st, a - swa + sl, b - swb + sl, b + swb + sl, a + swa + sl, col_sleeper)
+		# Curve-following wooden railway sleepers/ties + twin gleaming steel rails
+		var sl := Vector3(0, y_lift + 0.00045, 0)
+		var swa: Vector3 = ra * 0.0032
+		var swb: Vector3 = rb * 0.0032
+		_emit_quad_uv(st, a - swa + sl, b - swb + sl, b + swb + sl, a + swa + sl, col_sleeper, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 		for side: float in [-1.0, 1.0]:
-			var rca: Vector3 = ra * (0.0046 * side)
-			var rcb: Vector3 = rb * (0.0046 * side)
-			var rwa: Vector3 = ra * 0.0016
-			var rwb: Vector3 = rb * 0.0016
-			var rl := Vector3(0, y_lift + 0.0016, 0)
-			_emit_quad(st, a + rca - rwa + rl, b + rcb - rwb + rl, b + rcb + rwb + rl, a + rca + rwa + rl, col_rail)
+			var rca: Vector3 = ra * (0.0024 * side)
+			var rcb: Vector3 = rb * (0.0024 * side)
+			var rwa: Vector3 = ra * 0.00085
+			var rwb: Vector3 = rb * 0.00085
+			var rl := Vector3(0, y_lift + 0.0009, 0)
+			_emit_quad_uv(st, a + rca - rwa + rl, b + rcb - rwb + rl, b + rcb + rwb + rl, a + rca + rwa + rl, col_rail, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
 	st.generate_normals()
 	var mi := MeshInstance3D.new()
@@ -2018,7 +2057,7 @@ func _build_track_3d(pv: Dictionary) -> Node3D:
 			portal.position = Vector3(p.x, p.y, p.z)
 			# Local +Z (open arch) points directly toward p_out; local -Z (rocky mound) buries into mountain
 			portal.rotation = Vector3(0.0, atan2(out_dx, out_dz), 0.0)
-			portal.scale = Vector3.ONE * 0.048
+			portal.scale = Vector3.ONE * 0.026
 			portal.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 			root.add_child(portal)
 
@@ -2071,6 +2110,15 @@ func _emit_quad(st: SurfaceTool, p0: Vector3, p1: Vector3, p2: Vector3, p3: Vect
 	st.add_vertex(p2)
 	st.set_color(col)
 	st.add_vertex(p3)
+
+
+func _emit_quad_uv(st: SurfaceTool, p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, col: Color, uv0: Vector2, uv1: Vector2, uv2: Vector2, uv3: Vector2) -> void:
+	st.set_color(col); st.set_uv(uv0); st.add_vertex(p0)
+	st.set_color(col); st.set_uv(uv1); st.add_vertex(p1)
+	st.set_color(col); st.set_uv(uv2); st.add_vertex(p2)
+	st.set_color(col); st.set_uv(uv0); st.add_vertex(p0)
+	st.set_color(col); st.set_uv(uv2); st.add_vertex(p2)
+	st.set_color(col); st.set_uv(uv3); st.add_vertex(p3)
 
 
 func _sample_river(xz: Vector2) -> float:
@@ -2423,7 +2471,7 @@ func _update_visual_effects(delta: float) -> void:
 				# Locomotive local +Z points forward (smokestack at front, cabin at rear)
 				var fwd := loco.global_transform.basis.z.normalized()
 				var up := loco.global_transform.basis.y.normalized()
-				_spawn_steam_puff(loco.position + up * 0.022 + fwd * 0.011, fwd)
+				_spawn_steam_puff(loco.position + up * 0.013 + fwd * 0.006, fwd)
 
 	for i in range(steam_puffs.size() - 1, -1, -1):
 		var sf = steam_puffs[i]
@@ -2731,13 +2779,13 @@ func _check_signal_stop(train: Dictionary, e: Dictionary, eid: int, forward: boo
 			var d_c := op2.distance_to(Geometry2D.get_closest_point_to_segment(op2, s2, s3))
 			min_dfwd = minf(min_dfwd, minf(d_a, minf(d_b, d_c)))
 
-		# Parallel double tracks are DOUBLE_TRACK_OFFSET (0.022u) apart; continuous corridor radius 0.018u > 0.014u collision!
-		if min_dfwd < 0.018:
+		# Parallel double tracks are DOUBLE_TRACK_OFFSET (0.012u) apart; continuous corridor radius 0.010u > 0.008u collision!
+		if min_dfwd < 0.010:
 			var o_s := _sample_route_ahead(o_segs, o_idx, float(other["dist_u"]), 0.0)
 			var o_fwd2 := Vector2((o_s["dir"] as Vector3).x, (o_s["dir"] as Vector3).z).normalized()
 			var lp: Vector3 = o_loco.position
 			var lat_dist := absf((lp.x - our_pos.x) * (-our_fwd2.y) + (lp.z - our_pos.z) * our_fwd2.x)
-			if (not same_edge) and our_fwd2.dot(o_fwd2) < -0.55 and lat_dist > 0.014:
+			if (not same_edge) and our_fwd2.dot(o_fwd2) < -0.55 and lat_dist > 0.0075:
 				continue
 			# Opposite-direction one-way rails at a 2-track station throat use separate entry/exit switches
 			# to Platform 1 vs Platform 2 — never deadlock head-to-head inside the station throat!
@@ -2750,7 +2798,7 @@ func _check_signal_stop(train: Dictionary, e: Dictionary, eid: int, forward: boo
 				var o_reason: String = String(other.get("wait_reason", ""))
 				var waiting_for_our_edge := (o_reason == ("R4_NEXT_EDGE(ne=%d)" % eid))
 				var loco_d0 := Vector2(lp.x - our_pos.x, lp.z - our_pos.z).length()
-				if (tid < otid and (loco_d0 > 0.018 or String(train["state"]) == "WAITING")) or (waiting_for_our_edge and loco_d0 > 0.018):
+				if (tid < otid and (loco_d0 > 0.010 or String(train["state"]) == "WAITING")) or (waiting_for_our_edge and loco_d0 > 0.010):
 					continue
 			train["wait_reason"] = "R5_JUNCT(e=%d,other=%d,d0=%.2f,df=%.3f)" % [eid, otid, min_d0, min_dfwd]
 			return true
@@ -2797,7 +2845,7 @@ func _check_train_collisions() -> void:
 			for c in t2["coaches"]:
 				t2_parts.append((c as MeshInstance3D).position)
 			for p2 in t2_parts:
-				if p1.distance_to(p2) < 0.014:
+				if p1.distance_to(p2) < 0.008:
 					# Opposite-direction one-way trains passing through a 2-track station's dual-platform switches
 					var e1_chk: int = int(t1["segs"][int(t1["seg_idx"])]["edge_id"]) if int(t1["seg_idx"]) < (t1["segs"] as Array).size() else -1
 					var e2_chk: int = int(t2["segs"][int(t2["seg_idx"])]["edge_id"]) if int(t2["seg_idx"]) < (t2["segs"] as Array).size() else -1
@@ -2952,7 +3000,7 @@ func _position_train_meshes(train: Dictionary) -> void:
 		if not train.has("platform_slot") or (int(train.get("at_station_idx", -1)) == -1):
 			train["platform_slot"] = _pick_free_platform_slot(active_st_idx, int(train["id"]))
 		var slot: int = int(train.get("platform_slot", 0))
-		lat_off = 0.011 if slot == 1 else -0.011
+		lat_off = 0.006 if slot == 1 else -0.006
 
 	var loco: MeshInstance3D = train["loco"]
 	_apply_vehicle_transform(loco, loco_s, zm, lat_off)
@@ -2977,10 +3025,10 @@ func _apply_vehicle_transform(inst: MeshInstance3D, sample: Dictionary, zoom_mul
 		else:
 			right = right.normalized()
 		var up := fwd.cross(right).normalized()
-		inst.position = pos + Vector3(0.0, 0.0045, 0.0) + right * lat_offset
+		inst.position = pos + Vector3(0.0, 0.0014, 0.0) + right * lat_offset
 		inst.basis = Basis(right, up, fwd).scaled(Vector3.ONE * (TRAIN_SCALE * zoom_mul))
 	else:
-		inst.position = pos + Vector3(0.0, 0.0045, 0.0)
+		inst.position = pos + Vector3(0.0, 0.0014, 0.0)
 
 
 func _sample_route_back(segs: Array, seg_idx: int, dist_u: float, back_u: float) -> Dictionary:

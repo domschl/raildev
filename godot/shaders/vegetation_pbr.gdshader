@@ -5,15 +5,14 @@ uniform vec3 bubble_center = vec3(0.0, 0.0, 0.0);
 uniform float bubble_radius = 1.15;
 uniform float zoom_fade = 1.0;
 
+uniform sampler2D tex_foliage   : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_foliage_n : hint_normal,  filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_bark      : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D tex_bark_n    : hint_normal,  filter_linear_mipmap, repeat_enable;
+
 varying vec3 v_world_pos;
 varying vec3 v_local_pos;
 varying vec3 v_world_n;
-
-float hash21(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
-}
 
 void vertex() {
     v_local_pos = VERTEX;
@@ -38,13 +37,51 @@ void vertex() {
 void fragment() {
     // Combine baked vertex color (trunk vs foliage) with per-instance Sentinel-2 forest tint
     vec3 col = COLOR.rgb;
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    // Harmonize saturation with Sentinel-2 atmospheric woodland palette
+    col = mix(vec3(lum), col, 0.78);
 
-    // Soft vertical crown AO (darker shaded understory, sunlit upper needles/leaves)
-    float crown_ao = mix(0.68, 1.08, smoothstep(0.0, 1.35, v_local_pos.y));
-    float sky_lift = mix(0.84, 1.06, clamp(v_world_n.y * 0.5 + 0.5, 0.0, 1.0));
-    float micro = 0.92 + 0.16 * hash21(floor(v_world_pos.xz * 480.0));
+    // Detect brown trunk vs green canopy from vertex color + height
+    float is_trunk = smoothstep(0.0, 0.06, col.r - col.g) * smoothstep(0.85, 0.45, v_local_pos.y);
 
-    ALBEDO = col * crown_ao * sky_lift * micro;
-    ROUGHNESS = 0.88;
-    SPECULAR = 0.12;
+    vec3 wn = normalize(v_world_n);
+    vec3 an = abs(wn);
+    vec2 uv_tri;
+    vec3 t_u;
+    vec3 t_v;
+    if (an.y > 0.55) {
+        uv_tri = v_world_pos.xz;
+        t_u = vec3(1.0, 0.0, 0.0);
+        t_v = vec3(0.0, 0.0, 1.0);
+    } else if (an.x > an.z) {
+        uv_tri = vec2(v_world_pos.z, v_world_pos.y);
+        t_u = vec3(0.0, 0.0, 1.0);
+        t_v = vec3(0.0, 1.0, 0.0);
+    } else {
+        uv_tri = vec2(v_world_pos.x, v_world_pos.y);
+        t_u = vec3(1.0, 0.0, 0.0);
+        t_v = vec3(0.0, 1.0, 0.0);
+    }
+
+    // Crisp leaf/needle cluster & furrowed bark textures + normal maps
+    vec3 fol_alb = texture(tex_foliage, uv_tri * 135.0).rgb;
+    vec3 fol_nm  = texture(tex_foliage_n, uv_tri * 135.0).rgb * 2.0 - 1.0;
+    vec3 brk_alb = texture(tex_bark, uv_tri * 180.0).rgb;
+    vec3 brk_nm  = texture(tex_bark_n, uv_tri * 180.0).rgb * 2.0 - 1.0;
+
+    vec3 tex_mul = mix(fol_alb * 1.18, brk_alb * 1.30, is_trunk);
+    vec3 nm = mix(fol_nm * 0.72, brk_nm * 0.85, is_trunk);
+    vec3 pert_n = normalize(wn + t_u * nm.x + t_v * nm.y);
+
+    // Strong root-to-crown AO (darkens base into ground contact shadow so trees feel rooted!)
+    float crown_ao = mix(0.44, 1.08, smoothstep(0.0, 1.35, v_local_pos.y));
+    float sky_lift = mix(0.80, 1.06, clamp(pert_n.y * 0.5 + 0.5, 0.0, 1.0));
+
+    vec3 final_col = col * tex_mul * crown_ao * sky_lift;
+    ALBEDO = final_col;
+    // Warm sunlit canopy translucency (subsurface glow through leaves/needles!)
+    BACKLIGHT = final_col * 0.24 * (1.0 - is_trunk);
+    ROUGHNESS = mix(0.86, 0.94, is_trunk);
+    SPECULAR = mix(0.14, 0.06, is_trunk);
+    NORMAL = normalize((VIEW_MATRIX * vec4(pert_n, 0.0)).xyz);
 }

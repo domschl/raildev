@@ -21,6 +21,8 @@ var cities: Array = []
 var regions: Array = []
 var city_labels: Array = []
 var vegetation_streamer: Node3D = null
+var urban_streamer: Node3D = null
+var sun_light: DirectionalLight3D = null
 var growth_mesh_north: Mesh = null
 var growth_mesh_med: Mesh = null
 var growth_mat: StandardMaterial3D = null
@@ -48,6 +50,13 @@ func _ready() -> void:
 		vegetation_streamer.set_script(veg_script)
 		add_child(vegetation_streamer)
 		vegetation_streamer.setup(self, railway_system)
+	var urb_script := load("res://scripts/UrbanStreamer.gd")
+	if urb_script:
+		urban_streamer = Node3D.new()
+		urban_streamer.name = "UrbanStreamer"
+		urban_streamer.set_script(urb_script)
+		add_child(urban_streamer)
+		urban_streamer.setup(self, railway_system)
 	_check_visual_test_args()
 
 
@@ -372,8 +381,16 @@ func _process(_delta: float) -> void:
 		return
 	_update_terrain_lods()
 	var cam_dist: float = atlas_camera.get_zoom_distance()
+	# Dynamically tighten directional shadow cascade & bias when zoomed in so micro-scale
+	# trees, stations, and locomotives cast crisp, grounded contact shadows on the terrain!
+	if sun_light:
+		sun_light.directional_shadow_max_distance = clampf(cam_dist * 8.0, 6.0, 180.0)
+		sun_light.shadow_bias = clampf(cam_dist * 0.008, 0.008, 0.05)
+		sun_light.shadow_normal_bias = clampf(cam_dist * 0.16, 0.18, 1.2)
 	if vegetation_streamer:
 		vegetation_streamer.update_for_camera(atlas_camera.current_pos, cam_dist)
+	if urban_streamer:
+		urban_streamer.update_for_camera(atlas_camera.current_pos, cam_dist)
 	for entry in city_labels:
 		var lbl: Label3D = entry["node"]
 		var tier: int = entry["tier"]
@@ -508,6 +525,24 @@ func sample_landuse(wx: float, wz: float) -> Color:
 	var iy := clampi(int(round(mp.y)), 0, MAP_H - 1)
 	var f := float(splat_data[(iy * MAP_W + ix) * 4 + 0]) / 255.0
 	return Color(f, 0.0, 0.0, 1.0)
+
+
+func sample_sat_color(wx: float, wz: float) -> Color:
+	if not regional_packs.is_empty():
+		var u := (wx / WORLD_SIZE.x) + 0.5
+		var v := (wz / WORLD_SIZE.y) + 0.5
+		for pk in regional_packs:
+			var a_img: Image = pk.get("albedo_thumb", null)
+			if a_img == null:
+				continue
+			var r: Vector4 = pk["uv_rect"]
+			if u >= r.x and u <= r.x + r.z and v >= r.y and v <= r.y + r.w:
+				var iu := (u - r.x) / r.z
+				var iv := (v - r.y) / r.w
+				var px := clampi(int(round(iu * float(a_img.get_width() - 1))), 0, a_img.get_width() - 1)
+				var py := clampi(int(round(iv * float(a_img.get_height() - 1))), 0, a_img.get_height() - 1)
+				return a_img.get_pixel(px, py)
+	return Color(0.28, 0.36, 0.24, 1.0)
 
 
 func sample_world_y(wx: float, wz: float) -> float:
@@ -677,6 +712,7 @@ func _setup_environment_and_sun() -> void:
 	# Warm Northwest directional sunlight casting crisp 3D Alpine & tree shadows
 	var sun := DirectionalLight3D.new()
 	sun.name = "SunLight"
+	sun_light = sun
 	sun.light_color = Color(1.0, 0.94, 0.84)
 	sun.light_energy = 1.22
 	sun.shadow_enabled = true
@@ -717,6 +753,11 @@ func _build_terrain_and_water() -> void:
 	var tex_forest := _load_texture_direct("res://textures/terrain_forest.png")
 	var tex_urban := _load_texture_direct("res://textures/city_urban.png")
 	var tex_water := _load_texture_direct("res://textures/terrain_water.png")
+	var tex_grass_n := _load_texture_direct("res://textures/terrain_grass_n.png")
+	var tex_forest_n := _load_texture_direct("res://textures/terrain_forest_n.png")
+	var tex_rock_n := _load_texture_direct("res://textures/terrain_rock_n.png")
+	var tex_cobble := _load_texture_direct("res://textures/pbr_cobble.png")
+	var tex_cobble_n := _load_texture_direct("res://textures/pbr_cobble_n.png")
 
 	# Build dynamic to-scale urban footprint mask (1024x768 R8) that expands live as cities grow!
 	urban_img = Image.create(MAP_W / 2, MAP_H / 2, false, Image.FORMAT_R8)
@@ -746,6 +787,11 @@ func _build_terrain_and_water() -> void:
 	terrain_mat.set_shader_parameter("tex_rock", tex_rock)
 	terrain_mat.set_shader_parameter("tex_forest", tex_forest)
 	terrain_mat.set_shader_parameter("tex_urban", tex_urban)
+	terrain_mat.set_shader_parameter("tex_grass_n", tex_grass_n)
+	terrain_mat.set_shader_parameter("tex_forest_n", tex_forest_n)
+	terrain_mat.set_shader_parameter("tex_rock_n", tex_rock_n)
+	terrain_mat.set_shader_parameter("tex_cobble", tex_cobble)
+	terrain_mat.set_shader_parameter("tex_cobble_n", tex_cobble_n)
 	terrain_mat.set_shader_parameter("world_size", WORLD_SIZE)
 	terrain_mat.set_shader_parameter("height_texel", h_texel)
 	terrain_mat.set_shader_parameter("land_height_scale", LAND_HEIGHT_SCALE)
@@ -784,10 +830,15 @@ func _build_terrain_and_water() -> void:
 					terrain_mat.set_shader_parameter(prefix + "_uv_rect", Vector4(float(uvr[0]), float(uvr[1]), float(uvr[2]), float(uvr[3])))
 					terrain_mat.set_shader_parameter(prefix + "_texel", Vector2(1.0 / float(pw), 1.0 / float(ph)))
 					var sat_path := "res://data/packs/%s_albedo.jpg" % pack_name
+					var albedo_thumb: Image = null
 					if FileAccess.file_exists(sat_path):
 						var sat_tex := _load_texture_direct(sat_path, true)
 						terrain_mat.set_shader_parameter(prefix + "_albedo_tex", sat_tex)
 						terrain_mat.set_shader_parameter("has_" + prefix + "_albedo", 1.0)
+						var tmp_alb := Image.load_from_file(ProjectSettings.globalize_path(sat_path))
+						if tmp_alb != null:
+							tmp_alb.resize(512, 384, Image.INTERPOLATE_BILINEAR)
+							albedo_thumb = tmp_alb
 					var water_img: Image = null
 					var water_path := "res://data/packs/%s_water.png" % pack_name
 					if FileAccess.file_exists(water_path):
@@ -803,6 +854,12 @@ func _build_terrain_and_water() -> void:
 					var lu_path := "res://data/packs/%s_landuse.png" % pack_name
 					if FileAccess.file_exists(lu_path):
 						landuse_img = Image.load_from_file(ProjectSettings.globalize_path(lu_path))
+						if landuse_img != null:
+							var lu_tex_img := landuse_img.duplicate()
+							lu_tex_img.generate_mipmaps()
+							var lu_tex := ImageTexture.create_from_image(lu_tex_img)
+							terrain_mat.set_shader_parameter(prefix + "_landuse_tex", lu_tex)
+							terrain_mat.set_shader_parameter("has_" + prefix + "_landuse", 1.0)
 					regional_packs.append({
 						"name": pack_name,
 						"uv_rect": Vector4(float(uvr[0]), float(uvr[1]), float(uvr[2]), float(uvr[3])),
@@ -811,6 +868,7 @@ func _build_terrain_and_water() -> void:
 						"heights": pbytes.to_float32_array(),
 						"water_img": water_img,
 						"landuse_img": landuse_img,
+						"albedo_thumb": albedo_thumb,
 					})
 					loaded_slots += 1
 					print("Loaded Regional Realism Pack [slot %d]: %s (%dx%d%s%s)" % [

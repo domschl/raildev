@@ -273,33 +273,94 @@ class MeshBuilder:
 
 
 def build_alpine_spruce():
+    """LOD1 Alpine Norway spruce (rooted underground to prevent slope floating)."""
     m = MeshBuilder()
-    bark = (0.32, 0.22, 0.14)
-    m.add_cylinder(0.0, 0.0, 0.42, 0.0, 0.11, 0.05, 6, bark)
+    bark = (0.28, 0.20, 0.13)
+    m.add_cylinder(0.0, -0.45, 0.55, 0.0, 0.12, 0.05, 6, bark)
     tiers = [
-        (0.28, 0.88, 0.56, (0.14, 0.28, 0.16), 0.0),
-        (0.62, 1.22, 0.46, (0.17, 0.33, 0.18), 0.35),
-        (0.95, 1.50, 0.34, (0.20, 0.38, 0.21), 0.72),
-        (1.24, 1.72, 0.20, (0.24, 0.43, 0.23), 1.05),
+        (0.24, 0.86, 0.54, (0.14, 0.26, 0.15), 0.0),
+        (0.58, 1.20, 0.44, (0.17, 0.31, 0.17), 0.35),
+        (0.92, 1.48, 0.32, (0.20, 0.36, 0.20), 0.72),
+        (1.22, 1.72, 0.18, (0.23, 0.40, 0.22), 1.05),
     ]
     for y0, y1, rad, col, rot in tiers:
-        m.add_cylinder(0.0, y0, y1, 0.0, rad, 0.0, 10, col, rot_offset=rot, star_amp=0.14)
+        m.add_cylinder(0.0, y0, y1, 0.0, rad, 0.0, 10, col, rot_offset=rot, star_amp=0.22)
+    return m
+
+
+def build_alpine_spruce_lod0():
+    """LOD0 detailed Alpine Norway spruce with rooted trunk, 7 drooping jagged bough whorls & asymmetric branch clusters."""
+    m = MeshBuilder()
+    bark = (0.26, 0.19, 0.12)
+    # Deeply rooted trunk so tree never floats on steep Alpine slopes
+    m.add_cylinder(0.0, -0.45, 1.50, 0.0, 0.13, 0.025, 7, bark)
+    # 7 staggered drooping conifer whorls with strong star-bough indentation + individual outer branch tufts
+    tiers = [
+        (0.18, 0.62, 0.56, (0.12, 0.23, 0.13), 0.00, 0.28),
+        (0.42, 0.86, 0.50, (0.14, 0.26, 0.15), 0.52, 0.26),
+        (0.66, 1.08, 0.43, (0.16, 0.29, 0.16), 1.04, 0.25),
+        (0.88, 1.28, 0.36, (0.18, 0.33, 0.18), 1.56, 0.24),
+        (1.10, 1.46, 0.28, (0.20, 0.36, 0.20), 2.08, 0.22),
+        (1.30, 1.62, 0.20, (0.22, 0.39, 0.21), 2.60, 0.20),
+        (1.48, 1.78, 0.12, (0.25, 0.42, 0.23), 3.12, 0.16),
+    ]
+    for idx, (y0, y1, rad, col, rot, amp) in enumerate(tiers):
+        m.add_cylinder(0.0, y0, y1, 0.0, rad, 0.0, 12, col, rot_offset=rot, star_amp=amp)
+        # Add 3 asymmetric drooping bough tufts around lower/mid whorls for organic silhouette
+        if idx < 4:
+            for k in range(3):
+                ang = rot + k * (2.0 * math.pi / 3.0) + idx * 0.45
+                bx = math.cos(ang) * rad * 0.52
+                bz = math.sin(ang) * rad * 0.52
+                by = y0 + 0.08
+                bcol = (col[0] * 1.06, col[1] * 1.08, col[2] * 1.04)
+                m.add_faceted_blob(bx, by, bz, rad * 0.34, 0.11, rad * 0.34, bcol, lat_segs=3, lon_segs=6, seed=ang * 3.1)
     return m
 
 
 def build_temperate_oak():
+    """LOD1 European deciduous oak/beech (rooted underground)."""
     m = MeshBuilder()
-    bark = (0.34, 0.24, 0.15)
-    m.add_cylinder(0.0, 0.0, 0.58, 0.0, 0.12, 0.07, 6, bark)
-    # Multi-cluster organic oak/beech crown
+    bark = (0.30, 0.21, 0.13)
+    m.add_cylinder(0.0, -0.45, 0.58, 0.0, 0.13, 0.07, 6, bark)
     blobs = [
-        (0.0,   0.98,  0.0,   0.46, 0.40, 0.44, (0.25, 0.44, 0.20), 1.0),
-        (0.28,  0.82,  0.14,  0.34, 0.30, 0.32, (0.22, 0.39, 0.18), 2.3),
-        (-0.26, 0.84,  0.18,  0.33, 0.29, 0.33, (0.28, 0.48, 0.22), 3.7),
-        (0.10,  0.80, -0.28,  0.35, 0.30, 0.32, (0.20, 0.36, 0.17), 5.1),
-        (-0.18, 0.92, -0.18,  0.32, 0.32, 0.30, (0.27, 0.46, 0.21), 6.4),
+        (0.0,   0.98,  0.0,   0.46, 0.40, 0.44, (0.24, 0.40, 0.19), 1.0),
+        (0.28,  0.82,  0.14,  0.34, 0.30, 0.32, (0.21, 0.36, 0.17), 2.3),
+        (-0.26, 0.84,  0.18,  0.33, 0.29, 0.33, (0.26, 0.44, 0.21), 3.7),
+        (0.10,  0.80, -0.28,  0.35, 0.30, 0.32, (0.19, 0.34, 0.16), 5.1),
+        (-0.18, 0.92, -0.18,  0.32, 0.32, 0.30, (0.25, 0.42, 0.20), 6.4),
     ]
     for cx, cy, cz, rx, ry, rz, col, sd in blobs:
+        m.add_faceted_blob(cx, cy, cz, rx, ry, rz, col, lat_segs=4, lon_segs=7, seed=sd)
+    return m
+
+
+def build_temperate_oak_lod0():
+    """LOD0 detailed European oak/beech with flared roots, forked limbs & 11 layered organic foliage boughs."""
+    m = MeshBuilder()
+    bark = (0.28, 0.20, 0.13)
+    # Deeply rooted trunk + flared root collar + 3 primary limbs
+    m.add_cylinder(0.0, -0.45, 0.12, 0.0, 0.17, 0.12, 7, bark)
+    m.add_cylinder(0.0,  0.12, 0.68, 0.0, 0.12, 0.06, 7, bark)
+    m.add_box( 0.14, 0.68,  0.08, 0.22, 0.07, 0.07, bark)
+    m.add_box(-0.14, 0.66,  0.06, 0.20, 0.07, 0.07, bark)
+    m.add_box( 0.02, 0.64, -0.14, 0.07, 0.07, 0.20, bark)
+
+    # 11 overlapping organic leaf-bough clusters forming an irregular natural canopy
+    boughs = [
+        ( 0.00, 1.12,  0.00, 0.38, 0.32, 0.36, (0.26, 0.43, 0.21), 1.1),
+        ( 0.28, 0.96,  0.16, 0.30, 0.24, 0.28, (0.24, 0.40, 0.19), 2.2),
+        (-0.26, 0.98,  0.20, 0.29, 0.25, 0.29, (0.28, 0.46, 0.22), 3.3),
+        ( 0.14, 0.94, -0.28, 0.30, 0.24, 0.28, (0.20, 0.35, 0.17), 4.4),
+        (-0.22, 0.96, -0.22, 0.28, 0.26, 0.27, (0.25, 0.42, 0.20), 5.5),
+        ( 0.38, 0.78, -0.06, 0.24, 0.19, 0.23, (0.19, 0.34, 0.16), 6.6),
+        (-0.36, 0.80, -0.04, 0.23, 0.19, 0.24, (0.22, 0.38, 0.18), 7.7),
+        ( 0.04, 0.78,  0.34, 0.25, 0.19, 0.23, (0.25, 0.42, 0.20), 8.8),
+        (-0.08, 0.76, -0.34, 0.24, 0.18, 0.23, (0.18, 0.32, 0.15), 9.9),
+        ( 0.16, 1.24,  0.10, 0.22, 0.18, 0.22, (0.29, 0.48, 0.23), 10.7),
+        (-0.14, 1.22, -0.08, 0.23, 0.18, 0.21, (0.27, 0.45, 0.21), 11.4),
+    ]
+    for cx, cy, cz, rx, ry, rz, col, sd in boughs:
         m.add_faceted_blob(cx, cy, cz, rx, ry, rz, col, lat_segs=4, lon_segs=7, seed=sd)
     return m
 
@@ -341,12 +402,23 @@ def build_shrub_cluster():
 
 def build_north_townhouse():
     m = MeshBuilder()
-    stone = (0.52, 0.49, 0.45)
-    wall  = (0.86, 0.81, 0.72)
-    roof  = (0.68, 0.29, 0.21)
-    chim  = (0.48, 0.28, 0.22)
-    m.add_box(0.0, 0.08, 0.0, 1.04, 0.16, 0.78, stone)
-    m.add_box(0.0, 0.52, 0.0, 0.98, 0.72, 0.72, wall)
+    stone = (0.44, 0.42, 0.39)
+    wall  = (0.80, 0.76, 0.68)
+    trim  = (0.64, 0.60, 0.54)
+    roof  = (0.58, 0.26, 0.19)
+    chim  = (0.45, 0.27, 0.21)
+    win   = (0.13, 0.16, 0.20)
+    # Deeply rooted stone plinth (extends to y = -0.38 so houses never float on slopes)
+    m.add_box(0.0, -0.14, 0.0, 1.04, 0.48, 0.78, stone)
+    # Main plastered facade + cornice
+    m.add_box(0.0, 0.48, 0.0, 0.98, 0.76, 0.72, wall)
+    m.add_box(0.0, 0.85, 0.0, 1.02, 0.06, 0.76, trim)
+    # Windows (front & back, 2 floors x 3 bays)
+    for z_side in (-0.365, 0.365):
+        for wy in (0.34, 0.64):
+            for wx in (-0.28, 0.0, 0.28):
+                m.add_box(wx, wy, z_side, 0.13, 0.18, 0.03, win)
+    # Steep Central European gable roof + chimney
     m.add_gable_roof(0.0, 0.88, 0.0, 0.98, 0.52, 0.72, roof, overhang=0.07)
     m.add_box(0.28, 1.24, -0.14, 0.14, 0.34, 0.14, chim)
     return m
@@ -354,15 +426,31 @@ def build_north_townhouse():
 
 def build_north_mansard():
     m = MeshBuilder()
-    stone = (0.58, 0.55, 0.50)
-    wall  = (0.84, 0.80, 0.72)
-    slate = (0.27, 0.31, 0.37)
-    chim  = (0.55, 0.48, 0.42)
-    m.add_box(0.0, 0.10, 0.0, 1.14, 0.20, 0.94, stone)
-    m.add_box(0.0, 0.60, 0.0, 1.08, 0.80, 0.88, wall)
-    m.add_hip_roof(0.0, 1.00, 0.0, 1.08, 0.36, 0.88, slate, ridge_frac=0.62, overhang=0.04)
-    m.add_box(-0.30, 1.38, 0.16, 0.12, 0.24, 0.12, chim)
-    m.add_box( 0.30, 1.38, -0.16, 0.12, 0.24, 0.12, chim)
+    stone = (0.48, 0.46, 0.43)
+    wall  = (0.78, 0.75, 0.68)
+    trim  = (0.62, 0.59, 0.54)
+    slate = (0.24, 0.27, 0.32)
+    chim  = (0.50, 0.44, 0.39)
+    win   = (0.13, 0.16, 0.20)
+    # Deeply rooted stone plinth (extends to y = -0.38)
+    m.add_box(0.0, -0.14, 0.0, 1.14, 0.48, 0.94, stone)
+    # Main Haussmann / Gründerzeit block + cornice
+    m.add_box(0.0, 0.56, 0.0, 1.08, 0.92, 0.88, wall)
+    m.add_box(0.0, 0.99, 0.0, 1.13, 0.06, 0.93, trim)
+    # Windows (front & back, 3 floors x 3 bays)
+    for z_side in (-0.445, 0.445):
+        for wy in (0.28, 0.56, 0.82):
+            for wx in (-0.32, 0.0, 0.32):
+                m.add_box(wx, wy, z_side, 0.14, 0.17, 0.03, win)
+    # Side windows (2 bays)
+    for x_side in (-0.545, 0.545):
+        for wy in (0.34, 0.70):
+            for wz in (-0.20, 0.20):
+                m.add_box(x_side, wy, wz, 0.03, 0.17, 0.14, win)
+    # Mansard hip slate roof + twin chimneys
+    m.add_hip_roof(0.0, 1.02, 0.0, 1.08, 0.36, 0.88, slate, ridge_frac=0.62, overhang=0.05)
+    m.add_box(-0.30, 1.40, 0.16, 0.12, 0.24, 0.12, chim)
+    m.add_box( 0.30, 1.40, -0.16, 0.12, 0.24, 0.12, chim)
     return m
 
 
@@ -382,16 +470,20 @@ def build_north_cathedral():
 
 
 def build_med_villa():
+    """Rooted Pyrenean/Mediterranean stone & stucco villa with terracotta roof & recessed windows."""
     m = MeshBuilder()
-    plinth = (0.68, 0.60, 0.48)
-    ochre  = (0.90, 0.78, 0.58)
-    terra  = (0.76, 0.42, 0.28)
-    # Main block + L-wing courtyard
-    m.add_box(0.0, 0.06, 0.0, 1.10, 0.12, 0.78, plinth)
-    m.add_box(0.0, 0.44, 0.0, 1.04, 0.64, 0.72, ochre)
-    m.add_hip_roof(0.0, 0.76, 0.0, 1.04, 0.30, 0.72, terra, ridge_frac=0.55, overhang=0.07)
-    m.add_box(0.34, 0.34, 0.48, 0.46, 0.56, 0.44, ochre)
-    m.add_hip_roof(0.34, 0.62, 0.48, 0.46, 0.20, 0.44, terra, ridge_frac=0.35, overhang=0.05)
+    plinth = (0.54, 0.48, 0.40)
+    ochre  = (0.74, 0.64, 0.49)
+    terra  = (0.58, 0.32, 0.22)
+    win    = (0.12, 0.14, 0.16)
+    m.add_box(0.0, -0.15, 0.0, 1.10, 0.46, 0.78, plinth)
+    m.add_box(0.0, 0.42, 0.0, 1.04, 0.64, 0.72, ochre)
+    for wx in (-0.28, 0.0, 0.28):
+        m.add_box(wx, 0.48,  0.365, 0.12, 0.16, 0.02, win)
+        m.add_box(wx, 0.48, -0.365, 0.12, 0.16, 0.02, win)
+    m.add_hip_roof(0.0, 0.74, 0.0, 1.04, 0.28, 0.72, terra, ridge_frac=0.55, overhang=0.07)
+    m.add_box(0.34, 0.32, 0.48, 0.46, 0.56, 0.44, ochre)
+    m.add_hip_roof(0.34, 0.60, 0.48, 0.46, 0.18, 0.44, terra, ridge_frac=0.35, overhang=0.05)
     return m
 
 
@@ -737,8 +829,10 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     assets = {
-        "tree_alpine_spruce.glb": build_alpine_spruce,
-        "tree_temperate_oak.glb": build_temperate_oak,
+        "tree_alpine_spruce.glb":      build_alpine_spruce,
+        "tree_alpine_spruce_lod0.glb": build_alpine_spruce_lod0,
+        "tree_temperate_oak.glb":      build_temperate_oak,
+        "tree_temperate_oak_lod0.glb": build_temperate_oak_lod0,
         "tree_med_cypress.glb":   build_med_cypress,
         "tree_med_olive.glb":     build_med_olive,
         "veg_shrub_cluster.glb":  build_shrub_cluster,
