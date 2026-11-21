@@ -1,0 +1,22 @@
+# Build, IDE & Runtime
+build/
+.godot/
+imgui.ini
+__pycache__/
+*.pyc
+*.tmp
+*.log
+
+# Packaging build artifacts
+packaging/**/pkg/
+packaging/**/src/
+*.pkg.tar.*
+*.zip
+
+# Large baked map binaries & tile caches (regenerate via tools/ scripts)
+godot/data/*.f32
+godot/data/*.rgba
+godot/data/*.jpg
+godot/data/*.png
+godot/data/packs/
+tools/cache/

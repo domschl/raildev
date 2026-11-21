@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Godot Engine 4
+GenericName=Game Engine
+Comment=Multi-platform 2D and 3D game engine
+Exec=godot4 %f
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=Godot

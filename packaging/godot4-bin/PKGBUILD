@@ -1,0 +1,38 @@
+# Maintainer: raildev project
+pkgname=godot4-bin
+pkgver=4.7.2
+pkgrel=1
+pkgdesc="Godot 4.x cross-platform 2D and 3D game engine (official prebuilt Linux binary)"
+arch=('aarch64' 'x86_64')
+url="https://godotengine.org"
+license=('MIT')
+depends=('alsa-lib' 'dbus' 'fontconfig' 'glibc' 'libglvnd' 'libx11' 'libxcursor' 'libxext' 'libxi' 'libxinerama' 'libxrandr' 'libxrender')
+optdepends=(
+    'vulkan-icd-loader: Vulkan rendering backend'
+    'wayland: native Wayland support'
+)
+provides=('godot' 'godot4')
+conflicts=('godot')
+options=('!strip' '!debug')
+
+source_aarch64=("https://github.com/godotengine/godot/releases/download/${pkgver}-stable/Godot_v${pkgver}-stable_linux.arm64.zip")
+source_x86_64=("https://github.com/godotengine/godot/releases/download/${pkgver}-stable/Godot_v${pkgver}-stable_linux.x86_64.zip")
+source=('godot4.desktop')
+
+sha512sums=('SKIP')
+sha512sums_aarch64=('dd59918da086bd49bde2f5450b5e567ff8650cbde9abbd7b8f4ca1197ff8c609baa38834666d032deafb47099078d7822279e2a0e06e5665745468f26533e7e2')
+sha512sums_x86_64=('9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65')
+
+package() {
+    local _bin_arch="x86_64"
+    if [[ "${CARCH}" == "aarch64" ]]; then
+        _bin_arch="arm64"
+    fi
+
+    install -Dm755 "${srcdir}/Godot_v${pkgver}-stable_linux.${_bin_arch}" \
+        "${pkgdir}/usr/bin/godot4"
+    ln -sf godot4 "${pkgdir}/usr/bin/godot"
+
+    install -Dm644 "${srcdir}/godot4.desktop" \
+        "${pkgdir}/usr/share/applications/godot4.desktop"
+}
