@@ -274,6 +274,96 @@ def process_alpha_bough(src_path: str, dst_base: str, normal_strength: float = 5
     print(f"  [ok] {dst_base}.png (RGBA alpha card) + {dst_base}_n.png (1024x1024)")
 
 
+def process_facade_atlas(
+    plaster_path: str,
+    halftimber_path: str,
+    sandstone_path: str,
+    brick_path: str,
+    dst_base: str = "pbr_facade_atlas",
+) -> None:
+    """
+    Build a 2048x2048 2x2 European facade PBR atlas (albedo + RGBA normal/depth):
+      Quadrant 0 (top-left):     style 0 = lime plaster / stucco
+      Quadrant 1 (top-right):    style 1 = half-timber (Fachwerk)
+      Quadrant 2 (bottom-left):  style 2 = dressed ashlar sandstone
+      Quadrant 3 (bottom-right): style 3 = aged European brick
+    Each 1024x1024 quadrant packs a 960x960 seamless tile with a 32px periodic
+    wrap-around gutter on all 4 sides so GPU linear filtering & mipmaps never
+    bleed across quadrant boundaries.
+    """
+    quad_sz = 1024
+    gutter = 32
+    core_sz = quad_sz - 2 * gutter  # 960
+
+    specs = [
+        # (path, row, col, target_mean, sat_scale, normal_strength, mode, invert_height)
+        # mode: "phase" = periodic crop + feather, "direct" = full-frame edge feather (already edge-aligned)
+        (plaster_path,    0, 0, 0.85, 0.50, 4.2, "phase",  False),
+        (halftimber_path, 0, 1, 0.78, 0.85, 6.2, "direct", True),
+        (sandstone_path,  1, 0, 0.80, 0.55, 5.8, "direct", False),
+        (brick_path,      1, 1, 0.76, 0.90, 6.5, "phase",  True),
+    ]
+
+    atlas_alb = np.zeros((quad_sz * 2, quad_sz * 2, 3), dtype=np.uint8)
+    atlas_nrm = np.zeros((quad_sz * 2, quad_sz * 2, 4), dtype=np.uint8)
+
+    for src_path, row, col, t_mean, sat_s, n_str, mode, inv_h in specs:
+        im = Image.open(src_path).convert("RGB")
+        raw = np.asarray(im, dtype=np.float32) / 255.0
+        if mode == "direct":
+            # Full-frame resize + gentle low-freq flatten + narrow symmetric edge feather
+            im_r = im.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+            a = np.asarray(im_r, dtype=np.float32) / 255.0
+            low = box_blur_periodic(a, radius=SIZE // 10)
+            a = np.clip(a - (low - a.mean(axis=(0, 1), keepdims=True)) * 0.45, 0.0, 1.0)
+            bw = 16
+            t = np.linspace(0.0, 1.0, bw, dtype=np.float32)
+            t = t * t * (3.0 - 2.0 * t)
+            out = a.copy()
+            left_orig, right_orig = a[:, :bw, :].copy(), a[:, -bw:, :].copy()
+            for i in range(bw):
+                w_edge = 0.5 * (1.0 - t[i])
+                out[:, i, :] = left_orig[:, i, :] * (1.0 - w_edge) + right_orig[:, i, :] * w_edge
+                out[:, -bw + i, :] = right_orig[:, i, :] * (1.0 - (0.5 * t[i])) + left_orig[:, i, :] * (0.5 * t[i])
+            top_orig, bot_orig = out[:bw, :, :].copy(), out[-bw:, :, :].copy()
+            for i in range(bw):
+                w_edge = 0.5 * (1.0 - t[i])
+                out[i, :, :] = top_orig[i, :, :] * (1.0 - w_edge) + bot_orig[i, :, :] * w_edge
+                out[-bw + i, :, :] = bot_orig[i, :, :] * (1.0 - (0.5 * t[i])) + top_orig[i, :, :] * (0.5 * t[i])
+            seamless = np.clip(out, 0.0, 1.0)
+        else:
+            seamless = make_seamless_crossfade(raw, phase_align=(mode == "phase"))
+        albedo = normalize_for_tinting(seamless, target_mean=t_mean, sat_scale=sat_s)
+        _, norm_rgba = derive_height_and_normal(seamless, strength=n_str, invert_height=inv_h)
+
+        # Resize seamless tile + normal map to core_sz (960x960) and wrap-pad by 32px -> 1024x1024
+        alb_u8 = np.asarray(
+            Image.fromarray(np.clip(albedo * 255.0, 0, 255).astype(np.uint8)).resize(
+                (core_sz, core_sz), Image.Resampling.LANCZOS
+            ),
+            dtype=np.uint8,
+        )
+        nrm_u8 = np.asarray(
+            Image.fromarray(norm_rgba, mode="RGBA").resize(
+                (core_sz, core_sz), Image.Resampling.LANCZOS
+            ),
+            dtype=np.uint8,
+        )
+        alb_quad = np.pad(alb_u8, ((gutter, gutter), (gutter, gutter), (0, 0)), mode="wrap")
+        nrm_quad = np.pad(nrm_u8, ((gutter, gutter), (gutter, gutter), (0, 0)), mode="wrap")
+
+        y0, y1 = row * quad_sz, (row + 1) * quad_sz
+        x0, x1 = col * quad_sz, (col + 1) * quad_sz
+        atlas_alb[y0:y1, x0:x1, :] = alb_quad
+        atlas_nrm[y0:y1, x0:x1, :] = nrm_quad
+
+    alb_path = os.path.join(OUT_DIR, f"{dst_base}.png")
+    nrm_path = os.path.join(OUT_DIR, f"{dst_base}_n.png")
+    Image.fromarray(atlas_alb, mode="RGB").save(alb_path, optimize=True)
+    Image.fromarray(atlas_nrm, mode="RGBA").save(nrm_path, optimize=True)
+    print(f"  [ok] {dst_base}.png + {dst_base}_n.png (2048x2048 2x2 atlas with 32px periodic gutters)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Process AI raw textures into seamless 1024x1024 PBR sets.")
     parser.add_argument("--foliage", type=str)
@@ -282,12 +372,19 @@ def main():
     parser.add_argument("--wall", type=str)
     parser.add_argument("--cobble", type=str)
     parser.add_argument("--ballast", type=str)
+    parser.add_argument("--wood-ties", type=str)
     parser.add_argument("--spruce-bough", type=str)
     parser.add_argument("--oak-bough", type=str)
     parser.add_argument("--terrain-forest", type=str)
     parser.add_argument("--terrain-grass", type=str)
     parser.add_argument("--terrain-grass-med", type=str)
     parser.add_argument("--terrain-rock", type=str)
+    parser.add_argument(
+        "--facade-atlas",
+        nargs=4,
+        metavar=("PLASTER", "HALFTIMBER", "SANDSTONE", "BRICK"),
+        help="Pack 4 AI facade textures into 2048x2048 2x2 pbr_facade_atlas.png + _n.png",
+    )
     parser.add_argument("--rebake-terrain-normals", action="store_true")
     args = parser.parse_args()
 
@@ -304,6 +401,16 @@ def main():
         process_tileable(args.cobble, "pbr_cobble", target_mean=0.60, sat_scale=0.85, normal_strength=6.5, phase_align=True)
     if args.ballast:
         process_tileable(args.ballast, "pbr_ballast", target_mean=0.58, sat_scale=0.85, normal_strength=7.0)
+    if args.wood_ties:
+        im = Image.open(args.wood_ties).convert("RGB").resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+        a = np.asarray(im, dtype=np.float32) / 255.0
+        low = box_blur_periodic(a, radius=SIZE // 10)
+        a = np.clip(a - (low - a.mean(axis=(0, 1), keepdims=True)) * 0.45, 0.0, 1.0)
+        albedo = normalize_for_tinting(a, target_mean=0.46, sat_scale=0.95)
+        _, norm_rgba = derive_height_and_normal(a, strength=6.8)
+        Image.fromarray(np.clip(albedo * 255.0, 0, 255).astype(np.uint8)).save(os.path.join(OUT_DIR, "pbr_wood_ties.png"), optimize=True)
+        Image.fromarray(norm_rgba, mode="RGBA").save(os.path.join(OUT_DIR, "pbr_wood_ties_n.png"), optimize=True)
+        print("  [ok] pbr_wood_ties.png + pbr_wood_ties_n.png (1024x1024, RGB normal + A depth)")
     if args.spruce_bough:
         process_alpha_bough(args.spruce_bough, "pbr_spruce_bough", normal_strength=5.5)
     if args.oak_bough:
@@ -316,6 +423,8 @@ def main():
         process_tileable(args.terrain_grass_med, "terrain_grass_mediterranean", target_mean=None, sat_scale=1.0, normal_strength=4.8, flatten_spots=True)
     if args.terrain_rock:
         process_tileable(args.terrain_rock, "terrain_rock", target_mean=None, sat_scale=1.0, normal_strength=7.2)
+    if args.facade_atlas:
+        process_facade_atlas(*args.facade_atlas)
     if args.rebake_terrain_normals:
         for base, strength in [("terrain_grass", 4.8), ("terrain_forest", 6.0), ("terrain_rock", 7.2)]:
             src = os.path.join(OUT_DIR, f"{base}.png")

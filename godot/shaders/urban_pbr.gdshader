@@ -87,11 +87,23 @@ void fragment() {
     vec3 wall_alb;
     vec4 wall_nh;
     if (use_facade_atlas) {
-        // Map model UV (0..1) into the selected 2x2 quadrant of the AI facade atlas (with 1% gutter margin)
+        // Map model UV into the selected 2x2 quadrant of the 2048x2048 AI facade atlas.
+        // Each 1024x1024 quadrant has a 960x960 seamless core + 32px periodic wrap gutter:
+        //   span = 960/2048 = 0.46875, margin = 32/2048 = 0.015625.
+        float uv_tile_scale = (style_idx < 0.5) ? 1.25 :
+                              (style_idx < 1.5) ? 1.00 :
+                              (style_idx < 2.5) ? 1.35 :
+                                                  1.65;
+        vec2 uv_f = v_uv * uv_tile_scale;
         vec2 quad_off = vec2(mod(style_idx, 2.0) * 0.5, floor(style_idx * 0.5) * 0.5);
-        vec2 uv_atlas = quad_off + (fract(v_uv) * 0.48 + 0.01);
-        wall_alb = texture(tex_facade_atlas, uv_atlas).rgb;
-        wall_nh  = texture(tex_facade_atlas_n, uv_atlas);
+        vec2 ddx = dFdx(uv_f) * 0.46875;
+        vec2 ddy = dFdy(uv_f) * 0.46875;
+        vec2 uv_atlas0 = quad_off + fract(uv_f) * 0.46875 + 0.015625;
+        float h_wall = textureGrad(tex_facade_atlas_n, uv_atlas0, ddx, ddy).a;
+        vec2 uv_fp = uv_f - view_ts * (h_wall - 0.5) * 0.014;
+        vec2 uv_atlas = quad_off + fract(uv_fp) * 0.46875 + 0.015625;
+        wall_alb = textureGrad(tex_facade_atlas, uv_atlas, ddx, ddy).rgb;
+        wall_nh  = textureGrad(tex_facade_atlas_n, uv_atlas, ddx, ddy);
     } else {
         float h_wall = texture(tex_wall_n, uv_wall).a;
         vec2 uv_wall_p = uv_wall - view_ts * (h_wall - 0.5) * 0.012;

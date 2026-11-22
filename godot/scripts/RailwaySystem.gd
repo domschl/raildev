@@ -83,6 +83,7 @@ var mesh_steam_puff: SphereMesh = null
 var mat_steam_puff: StandardMaterial3D = null
 
 var mat_solid: Material = null
+var mat_station: Material = null
 var mat_tunnel_guide: StandardMaterial3D = null
 var mat_ghost_ok: StandardMaterial3D = null
 var mat_ghost_warn: StandardMaterial3D = null
@@ -124,6 +125,7 @@ func setup_world(world: Node3D) -> void:
 	if rail_pbr_shader:
 		var sm := ShaderMaterial.new()
 		sm.shader = rail_pbr_shader
+		sm.set_shader_parameter("asset_mode", 0)
 		sm.set_shader_parameter("tex_ballast", world._load_texture_direct("res://textures/pbr_ballast.png"))
 		sm.set_shader_parameter("tex_ballast_n", world._load_texture_direct("res://textures/pbr_ballast_n.png"))
 		sm.set_shader_parameter("tex_wood_ties", world._load_texture_direct("res://textures/pbr_wood_ties.png"))
@@ -133,10 +135,26 @@ func setup_world(world: Node3D) -> void:
 		sm.set_shader_parameter("tex_wall", world._load_texture_direct("res://textures/pbr_wall_plaster.png"))
 		sm.set_shader_parameter("tex_wall_n", world._load_texture_direct("res://textures/pbr_wall_plaster_n.png"))
 		mat_solid = sm
+
+		var st_m := ShaderMaterial.new()
+		st_m.shader = rail_pbr_shader
+		st_m.set_shader_parameter("asset_mode", 2)
+		st_m.set_shader_parameter("tex_ballast", world._load_texture_direct("res://textures/pbr_ballast.png"))
+		st_m.set_shader_parameter("tex_ballast_n", world._load_texture_direct("res://textures/pbr_ballast_n.png"))
+		st_m.set_shader_parameter("tex_metal", world._load_texture_direct("res://textures/pbr_metal.png"))
+		st_m.set_shader_parameter("tex_metal_n", world._load_texture_direct("res://textures/pbr_metal_n.png"))
+		st_m.set_shader_parameter("tex_roof", world._load_texture_direct("res://textures/pbr_roof_tiles.png"))
+		st_m.set_shader_parameter("tex_roof_n", world._load_texture_direct("res://textures/pbr_roof_tiles_n.png"))
+		st_m.set_shader_parameter("tex_cobble", world._load_texture_direct("res://textures/pbr_cobble.png"))
+		st_m.set_shader_parameter("tex_cobble_n", world._load_texture_direct("res://textures/pbr_cobble_n.png"))
+		st_m.set_shader_parameter("tex_facade_atlas", world._load_texture_direct("res://textures/pbr_facade_atlas.png"))
+		st_m.set_shader_parameter("tex_facade_atlas_n", world._load_texture_direct("res://textures/pbr_facade_atlas_n.png"))
+		mat_station = st_m
 	else:
 		mat_solid = StandardMaterial3D.new()
 		mat_solid.vertex_color_use_as_albedo = true
 		mat_solid.roughness = 0.78
+		mat_station = mat_solid
 
 	mat_tunnel_guide = StandardMaterial3D.new()
 	mat_tunnel_guide.vertex_color_use_as_albedo = true
@@ -1363,9 +1381,9 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 		elif i == steps:
 			actual_p1 = pt
 		var elev: float = world_ref.sample_elevation_m(pt.x, pt.y)
-		# Slim side-slope shoulder probe matching micro-scale ballast width (keeps uphill shoulder above terrain!)
-		var elev_l: float = world_ref.sample_elevation_m(pt.x - nrm.x * 0.008, pt.y - nrm.y * 0.008)
-		var elev_r: float = world_ref.sample_elevation_m(pt.x + nrm.x * 0.008, pt.y + nrm.y * 0.008)
+		# Slim side-slope shoulder probe matching fine micro-scale ballast width (keeps uphill shoulder above terrain!)
+		var elev_l: float = world_ref.sample_elevation_m(pt.x - nrm.x * 0.003, pt.y - nrm.y * 0.003)
+		var elev_r: float = world_ref.sample_elevation_m(pt.x + nrm.x * 0.003, pt.y + nrm.y * 0.003)
 		var shoulder_elev := maxf(elev, maxf(elev_l, elev_r))
 
 		var river_v := _sample_river(pt)
@@ -1387,9 +1405,9 @@ func preview_track(p0: Vector2, p1: Vector2, has_sdir: bool, sdir: Vector2,
 		elevs.append(elev)
 		is_bridge_pt.append(on_water)
 
-		var wy: float = maxf(0.003, shoulder_elev * world_ref.LAND_HEIGHT_SCALE + 0.0022)
+		var wy: float = maxf(0.002, shoulder_elev * world_ref.LAND_HEIGHT_SCALE + 0.00075)
 		if on_water:
-			wy = maxf(wy, maxf(0.0, elev) * world_ref.LAND_HEIGHT_SCALE + 0.005)
+			wy = maxf(wy, maxf(0.0, elev) * world_ref.LAND_HEIGHT_SCALE + 0.0035)
 		clearance_y.append(wy)
 		pts3.append(Vector3(pt.x, wy, pt.y))
 		prev2 = pt
@@ -1747,7 +1765,7 @@ func add_station(pos: Vector2, city_idx: int, st_name: String, angle: float, tra
 	var inst := MeshInstance3D.new()
 	inst.name = "Station_%d" % st_id
 	inst.mesh = mesh_station_2track if tracks >= 2 else mesh_station
-	inst.material_override = mat_solid
+	inst.material_override = mat_station if mat_station else mat_solid
 	inst.position = Vector3(pos.x, maxf(0.0, wy) - 0.001, pos.y)
 	inst.rotation = Vector3(0.0, -angle, 0.0)
 	inst.scale = Vector3.ONE * STATION_SCALE
@@ -1943,10 +1961,11 @@ func _build_track_3d(pv: Dictionary) -> Node3D:
 	st_tun.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var has_tun_tris := false
 
-	var col_ballast := Color(0.30, 0.27, 0.24)
-	var col_sleeper := Color(0.20, 0.16, 0.13)
-	var col_bridge  := Color(0.46, 0.43, 0.39)
-	var col_rail    := Color(0.38, 0.41, 0.46)
+	var col_ballast := Color(0.28, 0.26, 0.24)  # linear lum ~0.06 -> dark crushed granite ballast
+	var col_berm    := Color(0.18, 0.26, 0.14)  # linear g - r > 0.02 -> sloped grassy-earth embankment berm
+	var col_sleeper := Color(0.96, 0.94, 0.90)  # linear lum ~0.87 -> 1024px AI creosote-oak sleeper texture
+	var col_bridge  := Color(0.56, 0.53, 0.48)  # linear lum ~0.24 -> dressed stone bridge deck
+	var col_rail    := Color(0.42, 0.45, 0.58)  # linear b - r ~0.15 -> gleaming steel railheads
 	var col_tunnel  := Color(0.95, 0.74, 0.28, 0.62)
 
 	var t_entry: int = pv.get("tunnel_entry", -1)
@@ -1972,26 +1991,28 @@ func _build_track_3d(pv: Dictionary) -> Node3D:
 		var ra: Vector3 = rights[i]
 		var rb: Vector3 = rights[i + 1]
 		var seg_d := a.distance_to(b)
-		var v0 := 0.10 + track_dist * 42.0
-		var v1 := 0.10 + (track_dist + seg_d) * 42.0
+		var v0 := 0.10 + track_dist * 46.0
+		var v1 := 0.10 + (track_dist + seg_d) * 46.0
 		track_dist += seg_d
 
 		var in_tunnel := (t_entry != -1 and i >= t_entry and i < t_exit)
 		if in_tunnel:
 			# Dashed translucent subterranean tunnel alignment visible through the mountain
 			if i % 2 == 0:
-				var tw := 0.005
+				var tw := 0.0038
 				var lift := Vector3(0, 0.004, 0)
 				_emit_quad(st_tun, a - ra * tw + lift, b - rb * tw + lift, b + rb * tw + lift, a + ra * tw + lift, col_tunnel)
 				has_tun_tris = true
 			continue
 
 		var is_br: bool = bridge_flags[i] or bridge_flags[i + 1]
-		var half_bed := 0.0060 if is_br else 0.0046
-		var half_skirt := half_bed * 1.38
-		var y_lift := 0.0014 if is_br else 0.0009
+		# Fine diorama-scale track proportions harmonized with European houses (~0.0075u wide):
+		#   ballast crown = 0.0042u, sleepers = 0.0036u, rail gauge = 0.0023u (~1.435m)
+		var half_bed := 0.0032 if is_br else 0.0021
+		var half_skirt := half_bed * 1.32
+		var y_lift := 0.0010 if is_br else 0.00050
 		var bed_col := col_bridge if is_br else col_ballast
-		var side_col := bed_col.darkened(0.22)
+		var side_col := bed_col.darkened(0.36)
 
 		# Continuous mitered ballast / stone bridge deck top (with track UV.y > 0.01 for gravel PBR shader!)
 		var a0 := a - ra * half_bed + Vector3(0, y_lift, 0)
@@ -2000,27 +2021,47 @@ func _build_track_3d(pv: Dictionary) -> Node3D:
 		var b1 := b + rb * half_bed + Vector3(0, y_lift, 0)
 		_emit_quad_uv(st, a0, b0, b1, a1, bed_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
-		# Deep ground-hugging ballast shoulder so smoothed embankments stay solidly rooted on slopes
-		var drop_y := -0.011 if is_br else -0.0090
-		var w_side := half_bed if is_br else half_skirt * 1.15
-		var as0 := a - ra * w_side + Vector3(0, y_lift + drop_y, 0)
-		var as1 := a + ra * w_side + Vector3(0, y_lift + drop_y, 0)
-		var bs0 := b - rb * w_side + Vector3(0, y_lift + drop_y, 0)
-		var bs1 := b + rb * w_side + Vector3(0, y_lift + drop_y, 0)
-		_emit_quad_uv(st, as0, bs0, b0, a0, side_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(0.3, v1), Vector2(0.3, v0))
-		_emit_quad_uv(st, a1, b1, bs1, as1, side_col, Vector2(0.7, v0), Vector2(0.7, v1), Vector2(1.0, v1), Vector2(1.0, v0))
+		if is_br:
+			# Clean vertical dressed-stone bridge viaduct deck sides
+			var drop_y := -0.011
+			var as0 := a - ra * half_bed + Vector3(0, y_lift + drop_y, 0)
+			var as1 := a + ra * half_bed + Vector3(0, y_lift + drop_y, 0)
+			var bs0 := b - rb * half_bed + Vector3(0, y_lift + drop_y, 0)
+			var bs1 := b + rb * half_bed + Vector3(0, y_lift + drop_y, 0)
+			_emit_quad_uv(st, as0, bs0, b0, a0, side_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(0.3, v1), Vector2(0.3, v0))
+			_emit_quad_uv(st, a1, b1, bs1, as1, side_col, Vector2(0.7, v0), Vector2(0.7, v1), Vector2(1.0, v1), Vector2(1.0, v0))
+		else:
+			# 2-stage sloped trapezoidal railway embankment (realistic ~1:1.5 batter, never a vertical cliff!):
+			# Stage 1: Crisp crushed-granite ballast shoulder (drops 0.0009, flares out +0.0014)
+			var sh_drop := -0.0009
+			var w_sh := half_bed + 0.0014
+			var ash0 := a - ra * w_sh + Vector3(0, y_lift + sh_drop, 0)
+			var ash1 := a + ra * w_sh + Vector3(0, y_lift + sh_drop, 0)
+			var bsh0 := b - rb * w_sh + Vector3(0, y_lift + sh_drop, 0)
+			var bsh1 := b + rb * w_sh + Vector3(0, y_lift + sh_drop, 0)
+			_emit_quad_uv(st, ash0, bsh0, b0, a0, side_col, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(0.3, v1), Vector2(0.3, v0))
+			_emit_quad_uv(st, a1, b1, bsh1, ash1, side_col, Vector2(0.7, v0), Vector2(0.7, v1), Vector2(1.0, v1), Vector2(1.0, v0))
+			# Stage 2: Sloped grassy-earth embankment berm (drops to -0.0095, flares out at ~1:1.45 batter)
+			var toe_drop := -0.0095
+			var w_toe := w_sh + (absf(toe_drop) - absf(sh_drop)) * 1.45
+			var at0 := a - ra * w_toe + Vector3(0, y_lift + toe_drop, 0)
+			var at1 := a + ra * w_toe + Vector3(0, y_lift + toe_drop, 0)
+			var bt0 := b - rb * w_toe + Vector3(0, y_lift + toe_drop, 0)
+			var bt1 := b + rb * w_toe + Vector3(0, y_lift + toe_drop, 0)
+			_emit_quad_uv(st, at0, bt0, bsh0, ash0, col_berm, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(0.4, v1), Vector2(0.4, v0))
+			_emit_quad_uv(st, ash1, bsh1, bt1, at1, col_berm, Vector2(0.6, v0), Vector2(0.6, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
-		# Curve-following wooden railway sleepers/ties + twin gleaming steel rails
-		var sl := Vector3(0, y_lift + 0.00045, 0)
-		var swa: Vector3 = ra * 0.0032
-		var swb: Vector3 = rb * 0.0032
+		# Curve-following wooden railway sleepers/ties + twin slim gleaming steel rails (aligned to tie plates!)
+		var sl := Vector3(0, y_lift + 0.00028, 0)
+		var swa: Vector3 = ra * 0.0018
+		var swb: Vector3 = rb * 0.0018
 		_emit_quad_uv(st, a - swa + sl, b - swb + sl, b + swb + sl, a + swa + sl, col_sleeper, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 		for side: float in [-1.0, 1.0]:
-			var rca: Vector3 = ra * (0.0024 * side)
-			var rcb: Vector3 = rb * (0.0024 * side)
-			var rwa: Vector3 = ra * 0.00085
-			var rwb: Vector3 = rb * 0.00085
-			var rl := Vector3(0, y_lift + 0.0009, 0)
+			var rca: Vector3 = ra * (0.00115 * side)
+			var rcb: Vector3 = rb * (0.00115 * side)
+			var rwa: Vector3 = ra * 0.00020
+			var rwb: Vector3 = rb * 0.00020
+			var rl := Vector3(0, y_lift + 0.00068, 0)
 			_emit_quad_uv(st, a + rca - rwa + rl, b + rcb - rwb + rl, b + rcb + rwb + rl, a + rca + rwa + rl, col_rail, Vector2(0.0, v0), Vector2(0.0, v1), Vector2(1.0, v1), Vector2(1.0, v0))
 
 	st.generate_normals()
