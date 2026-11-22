@@ -61,9 +61,17 @@ void fragment() {
     float is_dark_iron = smoothstep(0.28, 0.14, lum) * (1.0 - is_sleeper) * (1.0 - is_ballast);
     float is_masonry   = (1.0 - step(0.005, v_uv.y)) * smoothstep(0.32, 0.55, lum) * (1.0 - is_brass) * (1.0 - is_glass);
 
-    // Sample PBR albedo + tangent-space normal maps
-    vec3 bal_alb = texture(tex_ballast, v_world_pos.xz * 240.0).rgb;
-    vec3 bal_nm  = texture(tex_ballast_n, v_world_pos.xz * 240.0).rgb * 2.0 - 1.0;
+    // View direction in world space for subtle ballast/wall parallax relief
+    vec3 view_w = normalize((INV_VIEW_MATRIX * vec4(VIEW, 0.0)).xyz);
+    vec2 view_ts = vec2(dot(view_w, t_u), dot(view_w, t_v)) / max(abs(dot(view_w, wn)), 0.35);
+
+    // Sample PBR albedo + tangent-space normal & packed depth/height (alpha channel)
+    vec2 uv_bal = v_world_pos.xz * 240.0;
+    float h_bal = texture(tex_ballast_n, uv_bal).a;
+    vec2 uv_bal_p = uv_bal - view_ts * (h_bal - 0.5) * 0.026;
+    vec3 bal_alb = texture(tex_ballast, uv_bal_p).rgb;
+    vec4 bal_nh  = texture(tex_ballast_n, uv_bal_p);
+    vec3 bal_nm  = bal_nh.rgb * 2.0 - 1.0;
 
     vec3 tie_alb = texture(tex_wood_ties, vec2(v_uv.x, v_uv.y)).rgb;
     vec3 tie_nm  = texture(tex_wood_ties_n, vec2(v_uv.x, v_uv.y)).rgb * 2.0 - 1.0;
@@ -72,16 +80,17 @@ void fragment() {
     vec3 met_nm  = texture(tex_metal_n, uv_tri * tri_scale).rgb * 2.0 - 1.0;
 
     vec3 wal_alb = texture(tex_wall, uv_tri * (tri_scale * 0.85)).rgb;
-    vec3 wal_nm  = texture(tex_wall_n, uv_tri * (tri_scale * 0.85)).rgb * 2.0 - 1.0;
+    vec4 wal_nh  = texture(tex_wall_n, uv_tri * (tri_scale * 0.85));
+    vec3 wal_nm  = wal_nh.rgb * 2.0 - 1.0;
 
     // Select surface texture multiplier & normal map
     vec3 tex_mul = mix(met_alb * 1.18, wal_alb * 1.24, is_masonry);
-    tex_mul = mix(tex_mul, bal_alb * 1.42, is_ballast);
+    tex_mul = mix(tex_mul, bal_alb * 1.42 * (0.76 + 0.34 * bal_nh.a), is_ballast);
     tex_mul = mix(tex_mul, tie_alb * 1.45, is_sleeper);
     tex_mul = mix(tex_mul, met_alb * 1.28, is_rail);
 
-    vec3 nm = mix(met_nm * 0.45, wal_nm * 0.50, is_masonry);
-    nm = mix(nm, bal_nm * 0.88, is_ballast);
+    vec3 nm = mix(met_nm * 0.45, wal_nm * 0.52, is_masonry);
+    nm = mix(nm, bal_nm * 0.92, is_ballast);
     nm = mix(nm, tie_nm * 0.85, is_sleeper);
     nm = mix(nm, met_nm * 0.30, is_rail);
     nm *= (1.0 - is_glass);

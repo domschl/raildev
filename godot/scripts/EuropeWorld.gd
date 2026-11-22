@@ -17,12 +17,17 @@ var urban_img: Image = null
 var urban_tex: ImageTexture = null
 var terrain_chunks: Array = []   # {node: MeshInstance3D, center: Vector2, lod: int}
 var terrain_lod_meshes: Array[ArrayMesh] = []
+var terrain_mat: ShaderMaterial = null
+var terrain_detail_patch: MeshInstance3D = null
+var _detail_patch_mesh: ArrayMesh = null
+var _detail_patch_base_size := 2.4
 var cities: Array = []
 var regions: Array = []
 var city_labels: Array = []
 var vegetation_streamer: Node3D = null
 var urban_streamer: Node3D = null
 var sun_light: DirectionalLight3D = null
+var world_env_node: WorldEnvironment = null
 var growth_mesh_north: Mesh = null
 var growth_mesh_med: Mesh = null
 var growth_mat: StandardMaterial3D = null
@@ -381,12 +386,14 @@ func _process(_delta: float) -> void:
 		return
 	_update_terrain_lods()
 	var cam_dist: float = atlas_camera.get_zoom_distance()
-	# Dynamically tighten directional shadow cascade & bias when zoomed in so micro-scale
-	# trees, stations, and locomotives cast crisp, grounded contact shadows on the terrain!
+	# Dynamically tighten directional shadow cascade, normal bias & SSAO when zoomed in so micro-scale
+	# houses, trees, stations, and locomotives cast tight, grounded contact shadows (zero Peter-Panning!)
 	if sun_light:
-		sun_light.directional_shadow_max_distance = clampf(cam_dist * 8.0, 6.0, 180.0)
-		sun_light.shadow_bias = clampf(cam_dist * 0.008, 0.008, 0.05)
-		sun_light.shadow_normal_bias = clampf(cam_dist * 0.16, 0.18, 1.2)
+		sun_light.directional_shadow_max_distance = clampf(cam_dist * 5.5, 1.5, 180.0)
+		sun_light.shadow_bias = clampf(cam_dist * 0.005, 0.008, 0.05)
+		sun_light.shadow_normal_bias = clampf(cam_dist * 0.08, 0.04, 1.0)
+	if world_env_node and world_env_node.environment:
+		world_env_node.environment.ssao_radius = clampf(cam_dist * 0.022, 0.005, 0.35)
 	if vegetation_streamer:
 		vegetation_streamer.update_for_camera(atlas_camera.current_pos, cam_dist)
 	if urban_streamer:
@@ -700,6 +707,13 @@ func _setup_environment_and_sun() -> void:
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_exposure = 0.90
 
+	# Forward+ SSAO adds pixel-exact contact shadows right where house walls & trees meet the ground!
+	env.ssao_enabled = true
+	env.ssao_radius = 0.02
+	env.ssao_intensity = 1.65
+	env.ssao_power = 1.6
+	env.ssao_detail = 0.55
+
 	# Rayleigh cool-blue atmospheric aerial perspective (separates foreground & distant Alpine ridges!)
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_EXPONENTIAL
@@ -707,6 +721,7 @@ func _setup_environment_and_sun() -> void:
 	env.fog_density = 0.0042
 	env.fog_aerial_perspective = 0.78
 	world_env.environment = env
+	world_env_node = world_env
 	add_child(world_env)
 
 	# Warm Northwest directional sunlight casting crisp 3D Alpine & tree shadows
@@ -717,8 +732,12 @@ func _setup_environment_and_sun() -> void:
 	sun.light_energy = 1.22
 	sun.shadow_enabled = true
 	sun.shadow_bias = 0.05
-	sun.shadow_normal_bias = 1.2
+	sun.shadow_normal_bias = 1.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_split_1 = 0.06
+	sun.directional_shadow_split_2 = 0.18
+	sun.directional_shadow_split_3 = 0.45
+	sun.directional_shadow_blend_splits = true
 	sun.directional_shadow_max_distance = 180.0
 	sun.rotation_degrees = Vector3(-38.0, 38.0, 0.0)
 	add_child(sun)
@@ -777,7 +796,7 @@ func _build_terrain_and_water() -> void:
 		_create_lod_chunk_mesh(20, chunk_w, chunk_h),
 	]
 
-	var terrain_mat := ShaderMaterial.new()
+	terrain_mat = ShaderMaterial.new()
 	terrain_mat.shader = load("res://shaders/europe_terrain.gdshader")
 	terrain_mat.set_shader_parameter("height_tex", height_tex)
 	terrain_mat.set_shader_parameter("splat_tex", splat_tex)
@@ -903,6 +922,19 @@ func _build_terrain_and_water() -> void:
 				"lod": 3,
 			})
 
+	# 1b. Camera-Centered Ultra-High-Res Terrain Detail Patch (256x256 over 1.8u-3.6u -> ~100m vertex spacing!)
+	#     Eliminates low-poly mountain ridge lines and lets 40m/px DEM + generative geological erosion shine!
+	_detail_patch_mesh = _create_lod_chunk_mesh(256, _detail_patch_base_size, _detail_patch_base_size)
+	terrain_detail_patch = MeshInstance3D.new()
+	terrain_detail_patch.name = "TerrainDetailPatch"
+	terrain_detail_patch.mesh = _detail_patch_mesh
+	terrain_detail_patch.material_override = terrain_mat
+	terrain_detail_patch.custom_aabb = AABB(Vector3(-0.5, -4.0, -0.5), Vector3(_detail_patch_base_size + 1.0, 10.0, _detail_patch_base_size + 1.0))
+	terrain_detail_patch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	terrain_detail_patch.set_instance_shader_parameter("is_detail_patch", 1.0)
+	terrain_detail_patch.visible = false
+	chunks_root.add_child(terrain_detail_patch)
+
 	# 2. Reflective Animated 3D Ocean Surface at y = 0
 	var water_mesh := PlaneMesh.new()
 	water_mesh.size = WORLD_SIZE
@@ -946,6 +978,33 @@ func _update_terrain_lods() -> void:
 		if int(ch["lod"]) != want_lod:
 			ch["lod"] = want_lod
 			(ch["node"] as MeshInstance3D).mesh = terrain_lod_meshes[want_lod]
+
+	# Update camera-centered ultra-high-res terrain detail patch (kills low-poly mountain silhouettes!)
+	if terrain_detail_patch and terrain_mat:
+		if cam_d < 14.0:
+			var patch_size := 3.2 if cam_d < 5.5 else 5.6
+			var snap := patch_size / 32.0
+			var half_w := WORLD_SIZE.x * 0.5
+			var half_h := WORLD_SIZE.y * 0.5
+			var px0 := clampf(floor((cam_xz.x - patch_size * 0.5) / snap) * snap, -half_w, half_w - patch_size)
+			var pz0 := clampf(floor((cam_xz.y - patch_size * 0.5) / snap) * snap, -half_h, half_h - patch_size)
+			var s_ratio := patch_size / _detail_patch_base_size
+			terrain_detail_patch.position = Vector3(px0, 0.0, pz0)
+			terrain_detail_patch.scale = Vector3(s_ratio, 1.0, s_ratio)
+			var u0 := (px0 + half_w) / WORLD_SIZE.x
+			var v0 := (pz0 + half_h) / WORLD_SIZE.y
+			var du := patch_size / WORLD_SIZE.x
+			var dv := patch_size / WORLD_SIZE.y
+			terrain_detail_patch.set_instance_shader_parameter("chunk_uv_rect", Vector4(u0, v0, du, dv))
+			terrain_detail_patch.visible = true
+			# Inset hole slightly inside the detail patch's downward skirt -> zero cracks & zero z-fighting
+			var pad_u := du * 0.012
+			var pad_v := dv * 0.012
+			terrain_mat.set_shader_parameter("detail_hole_uv", Vector4(u0 + pad_u, v0 + pad_v, du - pad_u * 2.0, dv - pad_v * 2.0))
+		else:
+			if terrain_detail_patch.visible:
+				terrain_detail_patch.visible = false
+				terrain_mat.set_shader_parameter("detail_hole_uv", Vector4(0.0, 0.0, 0.0, 0.0))
 
 
 func _create_lod_chunk_mesh(grid_n: int, chunk_w: float, chunk_h: float) -> ArrayMesh:

@@ -5,14 +5,16 @@ extends Node3D
 # in 4 GPU MultiMesh draw calls, organically aligned around stations & real Sentinel-2 city footprints.
 
 const CELL_SIZE := 0.0132       # Dense European block spacing (~190m micro-scale grid)
-const BUBBLE_RADIUS := 0.92     # Stream radius around camera focus point
+const BUBBLE_RADIUS := 1.15     # Stream radius around camera focus point (RTX 4070 Ti headroom!)
 const REBUILD_MOVE_DIST := 0.12
 const ZOOM_SHOW_MAX := 7.2      # Start fading in city buildings below this camera distance
 const ZOOM_FULL_DIST := 2.6     # Full scale below this camera distance
 
-const MAX_TOWNHOUSE := 3400
-const MAX_MANSARD := 2600
-const MAX_VILLA := 1800
+const MAX_TOWNHOUSE := 4200
+const MAX_MANSARD := 3000
+const MAX_VILLA := 2000
+const MAX_CHALET := 2000
+const MAX_CORNER := 1600
 const MAX_PLAZA := 120
 
 var world_ref: Node3D = null
@@ -21,6 +23,8 @@ var rail_ref: Node3D = null
 var mm_townhouse: MultiMeshInstance3D = null
 var mm_mansard: MultiMeshInstance3D = null
 var mm_villa: MultiMeshInstance3D = null
+var mm_chalet: MultiMeshInstance3D = null
+var mm_corner: MultiMeshInstance3D = null
 var mm_plaza: MultiMeshInstance3D = null
 var urban_mat: ShaderMaterial = null
 
@@ -43,10 +47,18 @@ func setup(world: Node3D, rail: Node3D) -> void:
 	urban_mat.set_shader_parameter("tex_wall_n", world._load_texture_direct("res://textures/pbr_wall_plaster_n.png"))
 	urban_mat.set_shader_parameter("tex_cobble", world._load_texture_direct("res://textures/pbr_cobble.png"))
 	urban_mat.set_shader_parameter("tex_cobble_n", world._load_texture_direct("res://textures/pbr_cobble_n.png"))
+	# Automatically enable 2x2 AI facade atlas once dropped into godot/textures/
+	var atlas_abs := ProjectSettings.globalize_path("res://textures/pbr_facade_atlas.png")
+	if FileAccess.file_exists(atlas_abs):
+		urban_mat.set_shader_parameter("use_facade_atlas", true)
+		urban_mat.set_shader_parameter("tex_facade_atlas", world._load_texture_direct("res://textures/pbr_facade_atlas.png"))
+		urban_mat.set_shader_parameter("tex_facade_atlas_n", world._load_texture_direct("res://textures/pbr_facade_atlas_n.png"))
 
 	mm_townhouse = _make_mm("StreamTownhouse", world._load_glb_mesh("res://assets/models/bldg_north_townhouse.glb"), MAX_TOWNHOUSE)
 	mm_mansard = _make_mm("StreamMansard", world._load_glb_mesh("res://assets/models/bldg_north_mansard.glb"), MAX_MANSARD)
 	mm_villa = _make_mm("StreamVilla", world._load_glb_mesh("res://assets/models/bldg_med_villa.glb"), MAX_VILLA)
+	mm_chalet = _make_mm("StreamChalet", world._load_glb_mesh("res://assets/models/bldg_alpine_chalet.glb"), MAX_CHALET)
+	mm_corner = _make_mm("StreamCorner", world._load_glb_mesh("res://assets/models/bldg_corner_block.glb"), MAX_CORNER)
 
 	# Cobblestone station forecourt apron mesh
 	var pmesh := BoxMesh.new()
@@ -58,6 +70,7 @@ func _make_mm(node_name: String, mesh: Mesh, max_count: int) -> MultiMeshInstanc
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
+	mm.use_custom_data = true
 	mm.mesh = mesh
 	mm.instance_count = max_count
 	mm.visible_instance_count = 0
@@ -83,6 +96,8 @@ func update_for_camera(cam_target: Vector3, cam_dist: float) -> void:
 		mm_townhouse.visible = should_show
 		mm_mansard.visible = should_show
 		mm_villa.visible = should_show
+		mm_chalet.visible = should_show
+		mm_corner.visible = should_show
 		mm_plaza.visible = should_show
 	if not should_show:
 		return
@@ -111,10 +126,14 @@ func _rebuild_bubble(center: Vector2) -> void:
 	var th_mm := mm_townhouse.multimesh
 	var mn_mm := mm_mansard.multimesh
 	var vl_mm := mm_villa.multimesh
+	var ch_mm := mm_chalet.multimesh
+	var cr_mm := mm_corner.multimesh
 	var pl_mm := mm_plaza.multimesh
 	var th_cnt := 0
 	var mn_cnt := 0
 	var vl_cnt := 0
+	var ch_cnt := 0
+	var cr_cnt := 0
 	var pl_cnt := 0
 
 	var land_scale: float = world_ref.LAND_HEIGHT_SCALE
@@ -183,18 +202,31 @@ func _rebuild_bubble(center: Vector2) -> void:
 				var belev: float = world_ref.sample_elevation_m(bp.x, bp.y)
 				if belev < 2.0 or belev > 1850.0:
 					continue
-				var bwy := belev * land_scale - 0.0020
+				var bex1: float = world_ref.sample_elevation_m(bp.x + 0.015, bp.y)
+				var bex2: float = world_ref.sample_elevation_m(bp.x - 0.015, bp.y)
+				var bez1: float = world_ref.sample_elevation_m(bp.x, bp.y + 0.015)
+				var bez2: float = world_ref.sample_elevation_m(bp.x, bp.y - 0.015)
+				var b_min_elev := minf(belev, minf(minf(bex1, bex2), minf(bez1, bez2)))
+				var bwy := b_min_elev * land_scale - 0.0006
 				var s := 0.0074 + _hash2(si * 31 + oi, 7, 1) * 0.0020
 				var sy := s * (0.95 + _hash2(si * 31 + oi, 7, 2) * 0.28)
 				var bcol: Color = palette[(si * 7 + oi) % palette.size()] * (0.88 + _hash2(si * 31 + oi, 7, 3) * 0.16)
 				var bxf := Transform3D(Basis(Vector3.UP, -ang).scaled(Vector3(s, sy, s)), Vector3(bp.x, bwy, bp.y))
-				if oi % 2 == 0 and mn_cnt < MAX_MANSARD:
+				var b_cust := Color(float((si + oi) % 4), float((oi % 3)), _hash2(si * 13 + oi, 9, 4), _hash2(si * 19 + oi, 11, 5))
+				if oi % 3 == 0 and cr_cnt < MAX_CORNER:
+					cr_mm.set_instance_transform(cr_cnt, bxf)
+					cr_mm.set_instance_color(cr_cnt, bcol)
+					cr_mm.set_instance_custom_data(cr_cnt, b_cust)
+					cr_cnt += 1
+				elif oi % 2 == 0 and mn_cnt < MAX_MANSARD:
 					mn_mm.set_instance_transform(mn_cnt, bxf)
 					mn_mm.set_instance_color(mn_cnt, bcol)
+					mn_mm.set_instance_custom_data(mn_cnt, b_cust)
 					mn_cnt += 1
 				elif th_cnt < MAX_TOWNHOUSE:
 					th_mm.set_instance_transform(th_cnt, bxf)
 					th_mm.set_instance_color(th_cnt, bcol)
+					th_mm.set_instance_custom_data(th_cnt, b_cust)
 					th_cnt += 1
 
 	# 2. Real-Footprint Streaming City Buildings across Sentinel-2 Urban Areas!
@@ -250,10 +282,12 @@ func _rebuild_bubble(center: Vector2) -> void:
 			if elev < 2.0 or elev > 1750.0:
 				continue
 
-			# Avoid steep slopes
-			var ex: float = world_ref.sample_elevation_m(wx + 0.02, wz)
-			var ez: float = world_ref.sample_elevation_m(wx, wz + 0.02)
-			if maxf(absf(ex - elev), absf(ez - elev)) > 26.0:
+			# Avoid steep slopes & sample all 4 directions around footprint so house never floats on downhill side
+			var ex: float = world_ref.sample_elevation_m(wx + 0.018, wz)
+			var ex2: float = world_ref.sample_elevation_m(wx - 0.018, wz)
+			var ez: float = world_ref.sample_elevation_m(wx, wz + 0.018)
+			var ez2: float = world_ref.sample_elevation_m(wx, wz - 0.018)
+			if maxf(maxf(absf(ex - elev), absf(ex2 - elev)), maxf(absf(ez - elev), absf(ez2 - elev))) > 26.0:
 				continue
 
 			# Keep railway tracks & stations cleanly clear!
@@ -270,7 +304,8 @@ func _rebuild_bubble(center: Vector2) -> void:
 			var r_tint := _hash2(gx, gz, 16)
 			var r_pal := int(_hash2(gx, gz, 17) * 5.0) % 5
 
-			var wy := elev * land_scale - 0.0020
+			var min_elev := minf(elev, minf(minf(ex, ex2), minf(ez, ez2)))
+			var wy := min_elev * land_scale - 0.0006
 			var s := (0.0064 + r_size * 0.0026) * (1.10 if in_city_core else 0.92)
 			var sy := s * (0.88 + r_size * 0.34)
 			var tint := 0.82 + r_tint * 0.20
@@ -285,24 +320,44 @@ func _rebuild_bubble(center: Vector2) -> void:
 				pal_col = Color(0.86, 0.88, 0.81)
 			var bcol := Color(pal_col.r * tint, pal_col.g * tint, pal_col.b * tint)
 			var xf := Transform3D(Basis(Vector3.UP, -q_yaw).scaled(Vector3(s, sy, s)), Vector3(wx, wy, wz))
+			var facade_style := float(int(_hash2(gx, gz, 21) * 4.0) % 4)
+			var roof_style := float(int(_hash2(gx, gz, 22) * 3.0) % 3)
+			var b_cust := Color(facade_style, roof_style, _hash2(gx, gz, 23), _hash2(gx, gz, 24))
 
 			if is_med:
 				if vl_cnt < MAX_VILLA:
 					vl_mm.set_instance_transform(vl_cnt, xf)
 					vl_mm.set_instance_color(vl_cnt, bcol)
+					vl_mm.set_instance_custom_data(vl_cnt, b_cust)
 					vl_cnt += 1
-			elif in_city_core and r_kind < 0.58:
+			elif elev > 600.0 and r_kind < 0.58:
+				if ch_cnt < MAX_CHALET:
+					ch_mm.set_instance_transform(ch_cnt, xf)
+					ch_mm.set_instance_color(ch_cnt, bcol)
+					ch_mm.set_instance_custom_data(ch_cnt, b_cust)
+					ch_cnt += 1
+			elif in_city_core and r_kind < 0.28:
+				if cr_cnt < MAX_CORNER:
+					cr_mm.set_instance_transform(cr_cnt, xf)
+					cr_mm.set_instance_color(cr_cnt, bcol)
+					cr_mm.set_instance_custom_data(cr_cnt, b_cust)
+					cr_cnt += 1
+			elif in_city_core and r_kind < 0.64:
 				if mn_cnt < MAX_MANSARD:
 					mn_mm.set_instance_transform(mn_cnt, xf)
 					mn_mm.set_instance_color(mn_cnt, bcol)
+					mn_mm.set_instance_custom_data(mn_cnt, b_cust)
 					mn_cnt += 1
 			else:
 				if th_cnt < MAX_TOWNHOUSE:
 					th_mm.set_instance_transform(th_cnt, xf)
 					th_mm.set_instance_color(th_cnt, bcol)
+					th_mm.set_instance_custom_data(th_cnt, b_cust)
 					th_cnt += 1
 
 	th_mm.visible_instance_count = th_cnt
 	mn_mm.visible_instance_count = mn_cnt
 	vl_mm.visible_instance_count = vl_cnt
+	ch_mm.visible_instance_count = ch_cnt
+	cr_mm.visible_instance_count = cr_cnt
 	pl_mm.visible_instance_count = pl_cnt

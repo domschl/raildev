@@ -107,17 +107,24 @@ uv run --with numpy --with pillow --with requests python3 tools/bake_region_pack
 
 ## 5. Verification & Testing Workflows
 
-Always verify changes before committing—never claim visual or simulation fixes without running the relevant check:
+Always verify changes before committing—never claim visual or simulation fixes without running the relevant check.
+
+> **Executable name & GPU offload**:
+> - On **Arch x86_64** (distro package), the Godot 4 binary is `godot`. On **aarch64** (self-built Godot 4 where the distro's default `godot` was v3), it is `godot4`.
+> - On dual-GPU workstations where the monitor is attached to the Intel iGPU and the Nvidia GPU is offloaded, prefix graphical runs with `prime-run` (from `nvidia-prime`).
 
 1. **Visual Regression Screenshots** (renders Munich micro-scale station/city, Alpine peaks/forests, and overview shots):
    ```bash
+   # x86_64 Arch (with Intel display + Nvidia PRIME offload):
+   prime-run godot --path godot -- --visual-test /tmp/raildev_shots
+   # aarch64 (self-built Godot 4):
    godot4 --path godot -- --visual-test /tmp/raildev_shots
    ```
    Inspect `shot_micro_station.png` and `shot_alpine_forest.png` to verify shader compilation, grounding, textures, shadows, and track clearance.
 
 2. **Headless Railway Simulation & Signaling Stress Test** (12,000 steps, 6 trains, Y-junctions & chords):
    ```bash
-   godot4 --headless --path godot -- --sim-test
+   godot --headless --path godot -- --sim-test   # or `godot4` on aarch64
    ```
    Must pass with **0 collisions**, **0 signals in junctions**, **0 sharp/180° turns**, and **0 deadlocks** (`end_wait=0`).
 
