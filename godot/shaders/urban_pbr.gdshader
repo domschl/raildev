@@ -153,16 +153,16 @@ void fragment() {
     // Organic stone foundation plinth & creeping garden moss/ivy binding buildings into the ground!
     float vine_h = fract(sin(dot(floor(v_world_pos.xz * 260.0), vec2(127.1, 311.7))) * 43758.5453);
     float vine_wave = sin(v_world_pos.x * 420.0 + v_world_pos.z * 310.0) * 0.5 + 0.5;
-    float base_stone = smoothstep(0.11, -0.02, v_local_pos.y) * (1.0 - is_plaza) * (1.0 - is_win);
-    float ivy_limit = 0.06 + 0.14 * (vine_wave * 0.65 + vine_h * 0.35);
-    float base_moss = smoothstep(ivy_limit, ivy_limit - 0.09, v_local_pos.y)
-                    * smoothstep(0.32, 0.68, vine_wave * 0.7 + vine_h * 0.3)
+    float base_stone = smoothstep(0.15, -0.02, v_local_pos.y) * (1.0 - is_plaza) * (1.0 - is_win);
+    float ivy_limit = 0.08 + 0.16 * (vine_wave * 0.65 + vine_h * 0.35);
+    float base_moss = smoothstep(ivy_limit, ivy_limit - 0.10, v_local_pos.y)
+                    * smoothstep(0.28, 0.66, vine_wave * 0.7 + vine_h * 0.3)
                     * (1.0 - is_plaza) * (1.0 - is_win) * step(an.y, 0.65);
 
-    vec3 stone_plinth_col = cob_alb * vec3(0.46, 0.45, 0.42);
-    vec3 moss_ivy_col = mix(vec3(0.16, 0.25, 0.12), vec3(0.24, 0.33, 0.16), vine_wave);
-    col = mix(col, stone_plinth_col, base_stone * 0.72);
-    col = mix(col, moss_ivy_col, base_moss * 0.78);
+    vec3 stone_plinth_col = cob_alb * vec3(0.42, 0.41, 0.38);
+    vec3 moss_ivy_col = mix(vec3(0.15, 0.24, 0.11), vec3(0.22, 0.32, 0.15), vine_wave);
+    col = mix(col, stone_plinth_col, base_stone * 0.78);
+    col = mix(col, moss_ivy_col, base_moss * 0.82);
 
     // Perturb world normal using sampled PBR normal map
     vec3 nm = mix(wall_nm * 0.52, roof_nm * 0.88, is_roof);
@@ -170,7 +170,7 @@ void fragment() {
     nm *= (1.0 - is_win);
     vec3 pert_n = normalize(wn + t_u * nm.x + t_v * nm.y);
 
-    float ground_ao = mix(0.38, 1.00, smoothstep(-0.04, 0.36, v_local_pos.y));
+    float ground_ao = mix(0.28, 1.00, smoothstep(-0.04, 0.40, v_local_pos.y));
     ground_ao = mix(ground_ao, 0.94, is_plaza);
     float sky_ao = mix(0.82, 1.04, clamp(pert_n.y * 0.5 + 0.5, 0.0, 1.0));
 

@@ -509,11 +509,13 @@ void fragment() {
         float city_mask = smoothstep(0.08, 0.42, texture(urban_tex, v_uv).r);
         float sat_built = smoothstep(0.042, 0.008, albedo.g - max(albedo.r, albedo.b)) * smoothstep(0.22, 0.42, alb_lum);
         float raw_paved = max(hi_lu.g, max(hi_lu.b * 0.95, city_mask * sat_built));
-        // Crisper curb-like transition between cobblestone streets/plazas and adjacent lawns
-        float w_paved = smoothstep(0.22, 0.52, raw_paved + org_edge * 0.50)
+        // High-frequency organic breakup so paved street/plaza edges blend weatheredly into grass (NO smooth blobs!)
+        float grit_edge = (vnoise(wp * 68.0 + vec2(5.1, 13.7)) - 0.5) * 0.22;
+        float paved_sig = raw_paved + org_edge * 0.58 + grit_edge;
+        float w_paved = smoothstep(0.26, 0.56, paved_sig)
                       * (1.0 - w_forest * 0.80) * smoothstep(1400.0, 950.0, elev);
-        float curb_band = smoothstep(0.18, 0.34, raw_paved + org_edge * 0.50) * (1.0 - w_paved)
-                        * (1.0 - w_forest * 0.80) * smoothstep(1400.0, 950.0, elev);
+        float verge_band = smoothstep(0.14, 0.34, paved_sig) * (1.0 - w_paved)
+                         * (1.0 - w_forest * 0.80) * smoothstep(1400.0, 950.0, elev);
 
         // Keep green Alpine grass/pasture climbing up to ~1,850m (bare rock only on steep cliffs or high peaks!)
         float w_rock = clamp(max(rock_w, smoothstep(0.18, 0.34, slope) * smoothstep(1680.0, 2150.0, elev)), 0.0, 1.0);
@@ -526,14 +528,19 @@ void fragment() {
         float l_dry    = dot(pbr_dry,    vec3(0.299, 0.587, 0.114));
         float l_forest = dot(pbr_forest, vec3(0.299, 0.587, 0.114));
 
+        // Height-packed crevice micro-AO from grass & forest normal maps + organic tuft variation
+        float h_grass  = texture(tex_grass_n, g_uv).a;
+        float h_forest = texture(tex_forest_n, f_uv).a;
+        float veg_ao   = mix(0.76 + 0.38 * h_grass, 0.72 + 0.42 * h_forest, w_forest);
+
         // Zero-mean contrast-boosted detail multipliers (preserve exact Sentinel-2 average hue/brightness
         // while restoring crisp individual grass blades, clover, soil flecks & woodland needles!)
-        float c_grass  = clamp(1.0 + (l_grass  - 0.28) * 3.1, 0.42, 1.75);
-        float c_dry    = clamp(1.0 + (l_dry    - 0.36) * 2.6, 0.46, 1.65);
-        float c_forest = clamp(1.0 + (l_forest - 0.26) * 3.0, 0.38, 1.72);
-        vec3 det_grass  = mix(vec3(1.0), pbr_grass  / max(l_grass,  0.08), 0.52) * c_grass;
-        vec3 det_dry    = mix(vec3(1.0), pbr_dry    / max(l_dry,    0.08), 0.48) * c_dry;
-        vec3 det_forest = mix(vec3(1.0), pbr_forest / max(l_forest, 0.08), 0.55) * c_forest;
+        float c_grass  = clamp(1.0 + (l_grass  - 0.28) * 3.3, 0.38, 1.80);
+        float c_dry    = clamp(1.0 + (l_dry    - 0.36) * 2.8, 0.42, 1.70);
+        float c_forest = clamp(1.0 + (l_forest - 0.26) * 3.2, 0.36, 1.76);
+        vec3 det_grass  = mix(vec3(1.0), pbr_grass  / max(l_grass,  0.08), 0.54) * c_grass;
+        vec3 det_dry    = mix(vec3(1.0), pbr_dry    / max(l_dry,    0.08), 0.50) * c_dry;
+        vec3 det_forest = mix(vec3(1.0), pbr_forest / max(l_forest, 0.08), 0.56) * c_forest;
 
         vec3 det_veg = mix(det_grass, det_dry, w_dry);
         det_veg = mix(det_veg, det_forest, w_forest);
@@ -544,8 +551,15 @@ void fragment() {
             pbr_forest * vec3(0.84, 0.90, 0.72),
             w_forest
         );
-        // Lock ground color directly to Sentinel-2 satellite tone (zero color shift on zoom!)
-        vec3 synth_veg = mix(fallback_veg, albedo * det_veg, sat_w);
+        // Lock ground color directly to Sentinel-2 satellite tone + add crevice AO & subtle parcel/meadow mottling
+        float turf_mottle = 0.86 + 0.28 * (var_med * 0.55 + var_fine * 0.45);
+        vec3 synth_veg = mix(fallback_veg, albedo * det_veg, sat_w) * veg_ao * turf_mottle;
+
+        // Subtle tended garden/soil/gravel mottling on grass inside urban footprints
+        float urban_zone = clamp(max(hi_lu.g, city_mask * 0.7), 0.0, 1.0);
+        float garden_patch = smoothstep(0.42, 0.78, vnoise(wp * 24.0 + vec2(11.4, 6.2))) * urban_zone;
+        vec3 garden_soil = mix(synth_veg * vec3(0.92, 0.86, 0.76), vec3(0.24, 0.22, 0.17), 0.32);
+        synth_veg = mix(synth_veg, garden_soil, garden_patch * 0.42);
 
         // Geological Alpine rock: blend stochastic rock texture with procedural limestone/granite/slate strata + warm scree!
         vec3 rock_strata = sample_triplanar_rock(v_world_pos, macro_n) * 0.58;
@@ -558,31 +572,51 @@ void fragment() {
         // Subtle satellite tinting on rock too so Alpine peaks never shift hue when zooming in
         col_rock = mix(col_rock, mix(col_rock, albedo * clamp(dot(rock_tex_c, vec3(0.3, 0.59, 0.11)) / 0.45, 0.65, 1.40), 0.45), sat_w);
 
-        // Crisp 1024px granite cobblestones with subtle mortar crevice darkening & stone curb border
+        // Weathered European granite cobblestones (harmonized value so streets feel embedded, not pale cutouts!)
         float cob_h     = texture(tex_cobble_n, c_uv).a;
-        vec3 col_cob    = pbr_cob * vec3(0.76, 0.74, 0.71) * (0.80 + 0.30 * cob_h) * (0.92 + 0.16 * var_med);
-        vec3 col_curb   = vec3(0.50, 0.49, 0.46) * (0.88 + 0.22 * var_fine);
+        vec3 col_cob    = pbr_cob * vec3(0.56, 0.54, 0.50) * (0.68 + 0.44 * cob_h) * (0.88 + 0.24 * var_med);
+        // Worn earth / gravel / mossy verge transitioning cobblestone streets naturally into grass
+        vec3 col_verge  = mix(vec3(0.32, 0.30, 0.25), vec3(0.24, 0.27, 0.19), var_fine) * (0.82 + 0.34 * cob_h);
         vec3 col_snow   = vec3(0.84, 0.86, 0.90) * (0.92 + 0.14 * dot(pbr_rock, vec3(0.3, 0.59, 0.11)));
 
         // Synthesize 100% crisp, non-repeating PBR close-up ground albedo + matching normal map
         vec3 synth_alb = synth_veg;
         synth_alb = mix(synth_alb, col_rock, w_rock);
-        synth_alb = mix(synth_alb, col_curb, curb_band * 0.72);
+        synth_alb = mix(synth_alb, col_verge, verge_band * 0.76);
         synth_alb = mix(synth_alb, col_cob, w_paved);
         synth_alb = mix(synth_alb, col_snow, w_snow);
 
         vec3 synth_nm = mix(n_grass, mix(n_grass, n_forest, 0.65), w_forest);
         synth_nm = mix(synth_nm, n_rock, w_rock);
+        synth_nm = mix(synth_nm, mix(n_grass, n_cob, 0.55), verge_band);
         synth_nm = mix(synth_nm, n_cob, w_paved);
         synth_nm = mix(synth_nm, n_rock * 0.35, w_snow);
 
+        // Medium-scale sculpted ground micro-undulation normal (gentle meadow swells, garden mounds & berms)
+        // Rotated prime-ratio octaves guarantee ZERO axis-aligned grid artifacts while giving flat
+        // valley floors genuine 3D light-and-shadow structure without shifting vertex height!
+        mat2 u_rot1 = mat2(vec2(0.7986, -0.6018), vec2(0.6018, 0.7986));   // 37 deg
+        mat2 u_rot2 = mat2(vec2(-0.3907, -0.9205), vec2(0.9205, -0.3907)); // 113 deg
+        float u_eps = 0.022;
+        vec2 wp_r1 = u_rot1 * wp * 6.5 + vec2(2.3, 7.1);
+        vec2 wp_r2 = u_rot2 * wp * 17.5 + vec2(14.1, 3.8);
+        vec2 d1x = u_rot1 * vec2(u_eps, 0.0) * 6.5;
+        vec2 d2x = u_rot2 * vec2(u_eps, 0.0) * 17.5;
+        vec2 d1z = u_rot1 * vec2(0.0, u_eps) * 6.5;
+        vec2 d2z = u_rot2 * vec2(0.0, u_eps) * 17.5;
+        float u0 = vnoise(wp_r1) * 0.62 + vnoise(wp_r2) * 0.38;
+        float ux = vnoise(wp_r1 + d1x) * 0.62 + vnoise(wp_r2 + d2x) * 0.38;
+        float uz = vnoise(wp_r1 + d1z) * 0.62 + vnoise(wp_r2 + d2z) * 0.38;
+        float undul_amp = mix(0.024, 0.008, w_paved) * (1.0 - w_snow * 0.6);
+        vec3 undul_n = vec3((u0 - ux) / u_eps * undul_amp, 0.0, (u0 - uz) / u_eps * undul_amp);
+
         // Smoothly crossfade from blurry satellite image into 100% crisp PBR ground as camera zooms in!
         albedo = mix(albedo, synth_alb, close_w);
-        float relief_amp = mix(0.88, 1.05, max(max(w_forest * 0.7, w_rock), w_paved)) * (1.0 - w_snow * 0.65);
-        world_n = normalize(mix(world_n, normalize(world_n + vec3(synth_nm.x, 0.0, synth_nm.y) * relief_amp), close_w));
+        float relief_amp = mix(1.02, 1.18, max(max(w_forest * 0.7, w_rock), w_paved)) * (1.0 - w_snow * 0.65);
+        world_n = normalize(mix(world_n, normalize(world_n + undul_n + vec3(synth_nm.x, 0.0, synth_nm.y) * relief_amp), close_w));
 
         float synth_lum = dot(synth_alb, vec3(0.299, 0.587, 0.114));
-        micro_rough_mod = mix((0.45 - synth_lum) * 0.24, -0.08, w_paved) * close_w;
+        micro_rough_mod = mix((0.45 - synth_lum) * 0.28, -0.06, w_paved) * close_w;
     }
 
     // 5. Crisp coastal sandy/pebble beach (only in non-satellite mode)

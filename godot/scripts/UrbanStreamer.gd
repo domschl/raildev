@@ -4,7 +4,7 @@ extends Node3D
 # Renders thousands of micro-scale European townhouses, mansard blocks & landmark spires
 # in 4 GPU MultiMesh draw calls, organically aligned around stations & real Sentinel-2 city footprints.
 
-const CELL_SIZE := 0.0132       # Dense European block spacing (~190m micro-scale grid)
+const CELL_SIZE := 0.0198       # Dense European block spacing harmonized with station/train/tree scale
 const BUBBLE_RADIUS := 1.15     # Stream radius around camera focus point (RTX 4070 Ti headroom!)
 const REBUILD_MOVE_DIST := 0.12
 const ZOOM_SHOW_MAX := 7.2      # Start fading in city buildings below this camera distance
@@ -16,6 +16,9 @@ const MAX_VILLA := 2000
 const MAX_CHALET := 2000
 const MAX_CORNER := 1600
 const MAX_PLAZA := 120
+const MAX_YARD := 9500
+const MAX_GARDEN_SHRUB := 6500
+const MAX_GARDEN_TREE := 1500
 
 var world_ref: Node3D = null
 var rail_ref: Node3D = null
@@ -26,7 +29,14 @@ var mm_villa: MultiMeshInstance3D = null
 var mm_chalet: MultiMeshInstance3D = null
 var mm_corner: MultiMeshInstance3D = null
 var mm_plaza: MultiMeshInstance3D = null
+var mm_yard: MultiMeshInstance3D = null
+var mm_garden_shrub: MultiMeshInstance3D = null
+var mm_garden_tree: MultiMeshInstance3D = null
 var urban_mat: ShaderMaterial = null
+var yard_mat: ShaderMaterial = null
+var garden_veg_mat: ShaderMaterial = null
+var garden_bark_mat: ShaderMaterial = null
+var garden_oak_card_mat: ShaderMaterial = null
 
 var _last_build_center := Vector2(1e9, 1e9)
 var _last_rail_sig := -1
@@ -65,8 +75,49 @@ func setup(world: Node3D, rail: Node3D) -> void:
 	pmesh.size = Vector3(1.0, 0.08, 1.0)
 	mm_plaza = _make_mm("StreamStationPlazas", pmesh, MAX_PLAZA)
 
+	# Organic ground-contact AO + weathered stone/gravel/moss yard pad under every house
+	yard_mat = ShaderMaterial.new()
+	yard_mat.shader = load("res://shaders/urban_yard.gdshader")
+	yard_mat.set_shader_parameter("bubble_radius", BUBBLE_RADIUS)
+	yard_mat.set_shader_parameter("zoom_fade", 0.0)
+	yard_mat.set_shader_parameter("tex_cobble", world._load_texture_direct("res://textures/pbr_cobble.png"))
+	yard_mat.set_shader_parameter("tex_cobble_n", world._load_texture_direct("res://textures/pbr_cobble_n.png"))
+	var ymesh := PlaneMesh.new()
+	ymesh.size = Vector2(1.0, 1.0)
+	mm_yard = _make_mm("StreamHouseYards", ymesh, MAX_YARD, yard_mat, false)
 
-func _make_mm(node_name: String, mesh: Mesh, max_count: int) -> MultiMeshInstance3D:
+	# Urban garden hedges, corner shrubs & backyard broadleaf trees hugging houses
+	garden_veg_mat = ShaderMaterial.new()
+	garden_veg_mat.shader = load("res://shaders/vegetation_pbr.gdshader")
+	garden_veg_mat.set_shader_parameter("bubble_radius", BUBBLE_RADIUS)
+	garden_veg_mat.set_shader_parameter("zoom_fade", 0.0)
+	garden_veg_mat.set_shader_parameter("tex_foliage", world._load_texture_direct("res://textures/pbr_foliage.png"))
+	garden_veg_mat.set_shader_parameter("tex_foliage_n", world._load_texture_direct("res://textures/pbr_foliage_n.png"))
+	garden_veg_mat.set_shader_parameter("tex_bark", world._load_texture_direct("res://textures/pbr_bark.png"))
+	garden_veg_mat.set_shader_parameter("tex_bark_n", world._load_texture_direct("res://textures/pbr_bark_n.png"))
+
+	garden_bark_mat = garden_veg_mat.duplicate()
+	garden_bark_mat.set_shader_parameter("force_bark", true)
+
+	garden_oak_card_mat = ShaderMaterial.new()
+	garden_oak_card_mat.shader = load("res://shaders/vegetation_card_pbr.gdshader")
+	garden_oak_card_mat.set_shader_parameter("bubble_radius", BUBBLE_RADIUS)
+	garden_oak_card_mat.set_shader_parameter("zoom_fade", 0.0)
+	garden_oak_card_mat.set_shader_parameter("tex_card", world._load_texture_direct("res://textures/pbr_oak_bough.png"))
+	garden_oak_card_mat.set_shader_parameter("tex_card_n", world._load_texture_direct("res://textures/pbr_oak_bough_n.png"))
+
+	mm_garden_shrub = _make_mm("StreamGardenShrubs", world._load_glb_mesh("res://assets/models/veg_shrub_cluster.glb"), MAX_GARDEN_SHRUB, garden_veg_mat, true)
+	var oak_mesh: Mesh = world._load_glb_mesh("res://assets/models/tree_temperate_oak_lod0.glb")
+	if oak_mesh != null and oak_mesh.get_surface_count() >= 2:
+		oak_mesh = oak_mesh.duplicate()
+		oak_mesh.surface_set_material(0, garden_bark_mat)
+		oak_mesh.surface_set_material(1, garden_oak_card_mat)
+		mm_garden_tree = _make_mm("StreamGardenTrees", oak_mesh, MAX_GARDEN_TREE, null, true)
+	else:
+		mm_garden_tree = _make_mm("StreamGardenTrees", oak_mesh, MAX_GARDEN_TREE, garden_veg_mat, true)
+
+
+func _make_mm(node_name: String, mesh: Mesh, max_count: int, mat_override: Material = urban_mat, cast_shadows: bool = true) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
@@ -78,8 +129,9 @@ func _make_mm(node_name: String, mesh: Mesh, max_count: int) -> MultiMeshInstanc
 	var inst := MultiMeshInstance3D.new()
 	inst.name = node_name
 	inst.multimesh = mm
-	inst.material_override = urban_mat
-	inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	if mat_override != null:
+		inst.material_override = mat_override
+	inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	inst.visible = false
 	add_child(inst)
 	return inst
@@ -99,11 +151,27 @@ func update_for_camera(cam_target: Vector3, cam_dist: float) -> void:
 		mm_chalet.visible = should_show
 		mm_corner.visible = should_show
 		mm_plaza.visible = should_show
+		mm_yard.visible = should_show
+		mm_garden_shrub.visible = should_show
+		mm_garden_tree.visible = should_show
 	if not should_show:
 		return
 
-	urban_mat.set_shader_parameter("bubble_center", Vector3(cam_target.x, 0.0, cam_target.z))
+	var bcenter := Vector3(cam_target.x, 0.0, cam_target.z)
+	urban_mat.set_shader_parameter("bubble_center", bcenter)
 	urban_mat.set_shader_parameter("zoom_fade", zoom_fade)
+	if yard_mat:
+		yard_mat.set_shader_parameter("bubble_center", bcenter)
+		yard_mat.set_shader_parameter("zoom_fade", zoom_fade)
+	if garden_veg_mat:
+		garden_veg_mat.set_shader_parameter("bubble_center", bcenter)
+		garden_veg_mat.set_shader_parameter("zoom_fade", zoom_fade)
+	if garden_bark_mat:
+		garden_bark_mat.set_shader_parameter("bubble_center", bcenter)
+		garden_bark_mat.set_shader_parameter("zoom_fade", zoom_fade)
+	if garden_oak_card_mat:
+		garden_oak_card_mat.set_shader_parameter("bubble_center", bcenter)
+		garden_oak_card_mat.set_shader_parameter("zoom_fade", zoom_fade)
 
 	var rail_sig := 0
 	if rail_ref:
@@ -129,12 +197,18 @@ func _rebuild_bubble(center: Vector2) -> void:
 	var ch_mm := mm_chalet.multimesh
 	var cr_mm := mm_corner.multimesh
 	var pl_mm := mm_plaza.multimesh
+	var yd_mm := mm_yard.multimesh
+	var gs_mm := mm_garden_shrub.multimesh
+	var gt_mm := mm_garden_tree.multimesh
 	var th_cnt := 0
 	var mn_cnt := 0
 	var vl_cnt := 0
 	var ch_cnt := 0
 	var cr_cnt := 0
 	var pl_cnt := 0
+	var yd_cnt := 0
+	var gs_cnt := 0
+	var gt_cnt := 0
 
 	var land_scale: float = world_ref.LAND_HEIGHT_SCALE
 
@@ -174,16 +248,15 @@ func _rebuild_bubble(center: Vector2) -> void:
 
 			# Spawn station-aligned Bahnhofsplatz buildings framing the forecourt (hotels, cafés, townhouses)
 			var offsets := [
-				Vector2(-0.028, plaza_off + 0.019),
-				Vector2(-0.014, plaza_off + 0.021),
-				Vector2( 0.000, plaza_off + 0.022),
-				Vector2( 0.014, plaza_off + 0.021),
-				Vector2( 0.028, plaza_off + 0.019),
-				Vector2(-0.034, plaza_off + 0.003),
-				Vector2( 0.034, plaza_off + 0.003),
-				Vector2(-0.022, plaza_off + 0.034),
-				Vector2( 0.000, plaza_off + 0.035),
-				Vector2( 0.022, plaza_off + 0.034),
+				Vector2(-0.032, plaza_off + 0.021),
+				Vector2(-0.011, plaza_off + 0.022),
+				Vector2( 0.011, plaza_off + 0.022),
+				Vector2( 0.032, plaza_off + 0.021),
+				Vector2(-0.042, plaza_off + 0.003),
+				Vector2( 0.042, plaza_off + 0.003),
+				Vector2(-0.024, plaza_off + 0.041),
+				Vector2( 0.000, plaza_off + 0.042),
+				Vector2( 0.024, plaza_off + 0.041),
 			]
 			var palette := [
 				Color(0.95, 0.88, 0.76),
@@ -197,18 +270,18 @@ func _rebuild_bubble(center: Vector2) -> void:
 				var bp := sp + fwd * off.x + side * off.y
 				if world_ref.sample_water_mask(bp.x, bp.y) > 0.16:
 					continue
-				if rail_ref.is_near_railway(bp, 0.020, 0.024):
+				if rail_ref.is_near_railway(bp, 0.024, 0.026):
 					continue
 				var belev: float = world_ref.sample_elevation_m(bp.x, bp.y)
 				if belev < 2.0 or belev > 1850.0:
 					continue
-				var bex1: float = world_ref.sample_elevation_m(bp.x + 0.015, bp.y)
-				var bex2: float = world_ref.sample_elevation_m(bp.x - 0.015, bp.y)
-				var bez1: float = world_ref.sample_elevation_m(bp.x, bp.y + 0.015)
-				var bez2: float = world_ref.sample_elevation_m(bp.x, bp.y - 0.015)
+				var bex1: float = world_ref.sample_elevation_m(bp.x + 0.018, bp.y)
+				var bex2: float = world_ref.sample_elevation_m(bp.x - 0.018, bp.y)
+				var bez1: float = world_ref.sample_elevation_m(bp.x, bp.y + 0.018)
+				var bez2: float = world_ref.sample_elevation_m(bp.x, bp.y - 0.018)
 				var b_min_elev := minf(belev, minf(minf(bex1, bex2), minf(bez1, bez2)))
 				var bwy := b_min_elev * land_scale - 0.0006
-				var s := 0.0074 + _hash2(si * 31 + oi, 7, 1) * 0.0020
+				var s := 0.0116 + _hash2(si * 31 + oi, 7, 1) * 0.0030
 				var sy := s * (0.95 + _hash2(si * 31 + oi, 7, 2) * 0.28)
 				var bcol: Color = palette[(si * 7 + oi) % palette.size()] * (0.88 + _hash2(si * 31 + oi, 7, 3) * 0.16)
 				var bxf := Transform3D(Basis(Vector3.UP, -ang).scaled(Vector3(s, sy, s)), Vector3(bp.x, bwy, bp.y))
@@ -228,6 +301,18 @@ func _rebuild_bubble(center: Vector2) -> void:
 					th_mm.set_instance_color(th_cnt, bcol)
 					th_mm.set_instance_custom_data(th_cnt, b_cust)
 					th_cnt += 1
+				# Slope-aligned organic contact-AO & stone courtyard pad under Bahnhofsplatz building
+				if yd_cnt < MAX_YARD:
+					var bn := Vector3((bex2 - bex1) * land_scale, 2.0 * 0.018, (bez2 - bez1) * land_scale).normalized()
+					var bfwd := Vector3(cos(ang), 0.0, sin(ang))
+					bfwd = (bfwd - bn * bfwd.dot(bn)).normalized()
+					var bright := bn.cross(bfwd).normalized()
+					var y_basis := Basis(bright * (s * 1.95), bn, bfwd * (s * 1.65))
+					var y_pos := Vector3(bp.x, belev * land_scale, bp.y) + bn * 0.00045
+					yd_mm.set_instance_transform(yd_cnt, Transform3D(y_basis, y_pos))
+					yd_mm.set_instance_color(yd_cnt, Color.WHITE)
+					yd_mm.set_instance_custom_data(yd_cnt, Color(0.0, 0.0, _hash2(si * 17 + oi, 3, 6), _hash2(si * 23 + oi, 5, 7)))
+					yd_cnt += 1
 
 	# 2. Real-Footprint Streaming City Buildings across Sentinel-2 Urban Areas!
 	var gx0 := int(floor((center.x - BUBBLE_RADIUS) / CELL_SIZE))
@@ -237,8 +322,8 @@ func _rebuild_bubble(center: Vector2) -> void:
 
 	for gz in range(gz0, gz1 + 1):
 		for gx in range(gx0, gx1 + 1):
-			var jx := (_hash2(gx, gz, 11) - 0.5) * 0.62
-			var jz := (_hash2(gx, gz, 12) - 0.5) * 0.62
+			var jx := (_hash2(gx, gz, 11) - 0.5) * 0.50
+			var jz := (_hash2(gx, gz, 12) - 0.5) * 0.50
 			var wx := (float(gx) + 0.5 + jx) * CELL_SIZE
 			var wz := (float(gz) + 0.5 + jz) * CELL_SIZE
 			var dx := wx - center.x
@@ -283,15 +368,15 @@ func _rebuild_bubble(center: Vector2) -> void:
 				continue
 
 			# Avoid steep slopes & sample all 4 directions around footprint so house never floats on downhill side
-			var ex: float = world_ref.sample_elevation_m(wx + 0.018, wz)
-			var ex2: float = world_ref.sample_elevation_m(wx - 0.018, wz)
-			var ez: float = world_ref.sample_elevation_m(wx, wz + 0.018)
-			var ez2: float = world_ref.sample_elevation_m(wx, wz - 0.018)
+			var ex: float = world_ref.sample_elevation_m(wx + 0.022, wz)
+			var ex2: float = world_ref.sample_elevation_m(wx - 0.022, wz)
+			var ez: float = world_ref.sample_elevation_m(wx, wz + 0.022)
+			var ez2: float = world_ref.sample_elevation_m(wx, wz - 0.022)
 			if maxf(maxf(absf(ex - elev), absf(ex2 - elev)), maxf(absf(ez - elev), absf(ez2 - elev))) > 26.0:
 				continue
 
 			# Keep railway tracks & stations cleanly clear!
-			if rail_ref and rail_ref.is_near_railway(Vector2(wx, wz), 0.024, 0.042):
+			if rail_ref and rail_ref.is_near_railway(Vector2(wx, wz), 0.028, 0.048):
 				continue
 
 			# Align street blocks organically: each ~3x3 neighborhood block shares a street angle!
@@ -306,7 +391,7 @@ func _rebuild_bubble(center: Vector2) -> void:
 
 			var min_elev := minf(elev, minf(minf(ex, ex2), minf(ez, ez2)))
 			var wy := min_elev * land_scale - 0.0006
-			var s := (0.0064 + r_size * 0.0026) * (1.10 if in_city_core else 0.92)
+			var s := (0.0102 + r_size * 0.0040) * (1.10 if in_city_core else 0.92)
 			var sy := s * (0.88 + r_size * 0.34)
 			var tint := 0.82 + r_tint * 0.20
 			var pal_col := Color(0.95, 0.88, 0.76)
@@ -355,9 +440,72 @@ func _rebuild_bubble(center: Vector2) -> void:
 					th_mm.set_instance_custom_data(th_cnt, b_cust)
 					th_cnt += 1
 
+			# Organic ground integration: slope-aligned contact-AO + courtyard/garden pad under every house
+			if yd_cnt < MAX_YARD:
+				var tn := Vector3((ex2 - ex) * land_scale, 2.0 * 0.022, (ez2 - ez) * land_scale).normalized()
+				var y_fwd := Vector3(cos(q_yaw), 0.0, sin(q_yaw))
+				y_fwd = (y_fwd - tn * y_fwd.dot(tn)).normalized()
+				var y_right := tn.cross(y_fwd).normalized()
+				var y_basis := Basis(y_right * (s * 2.05), tn, y_fwd * (s * 1.75))
+				var y_pos := Vector3(wx, elev * land_scale, wz) + tn * 0.00045
+				var yard_style := 0.0 if in_city_core else float(int(_hash2(gx, gz, 41) * 3.0) % 3)
+				yd_mm.set_instance_transform(yd_cnt, Transform3D(y_basis, y_pos))
+				yd_mm.set_instance_color(yd_cnt, Color.WHITE)
+				yd_mm.set_instance_custom_data(yd_cnt, Color(yard_style, 0.0, _hash2(gx, gz, 42), _hash2(gx, gz, 43)))
+				yd_cnt += 1
+
+			# Lush garden hedges / bushes hugging house corners to break up the geometric wall-ground seam!
+			var h_sh := _hash2(gx, gz, 51)
+			if h_sh < 0.72 and gs_cnt < MAX_GARDEN_SHRUB:
+				var c_ang := q_yaw + (0.65 if h_sh < 0.36 else -2.35) + (_hash2(gx, gz, 52) - 0.5) * 0.5
+				var c_dist := s * (0.62 + _hash2(gx, gz, 53) * 0.24)
+				var sx := wx + cos(c_ang) * c_dist
+				var sz := wz + sin(c_ang) * c_dist
+				var s_elev: float = world_ref.sample_elevation_m(sx, sz)
+				var swy := s_elev * land_scale - 0.0008
+				var sc := s * (0.52 + _hash2(gx, gz, 54) * 0.36)
+				var sy_sh := sc * (0.82 + _hash2(gx, gz, 55) * 0.32)
+				var g_tint := 0.72 + _hash2(gx, gz, 56) * 0.26
+				var scol := Color(0.56 * g_tint, 0.74 * g_tint, 0.44 * g_tint)
+				var sxf := Transform3D(Basis(Vector3.UP, _hash2(gx, gz, 57) * TAU).scaled(Vector3(sc, sy_sh, sc)), Vector3(sx, swy, sz))
+				gs_mm.set_instance_transform(gs_cnt, sxf)
+				gs_mm.set_instance_color(gs_cnt, scol)
+				gs_cnt += 1
+				# Second smaller hedge cluster on opposite corner for ~40% of houses
+				if h_sh < 0.34 and gs_cnt < MAX_GARDEN_SHRUB:
+					var c_ang2 := c_ang + PI * (0.85 + _hash2(gx, gz, 58) * 0.30)
+					var sx2 := wx + cos(c_ang2) * (s * 0.66)
+					var sz2 := wz + sin(c_ang2) * (s * 0.66)
+					var swy2: float = world_ref.sample_elevation_m(sx2, sz2) * land_scale - 0.0008
+					var sc2 := sc * 0.80
+					var sxf2 := Transform3D(Basis(Vector3.UP, _hash2(gx, gz, 59) * TAU).scaled(Vector3(sc2, sc2 * 0.85, sc2)), Vector3(sx2, swy2, sz2))
+					gs_mm.set_instance_transform(gs_cnt, sxf2)
+					gs_mm.set_instance_color(gs_cnt, scol * 0.92)
+					gs_cnt += 1
+
+			# Occasional backyard / courtyard broadleaf tree nestled among houses
+			var h_tr := _hash2(gx, gz, 61)
+			if h_tr < (0.14 if in_city_core else 0.24) and gt_cnt < MAX_GARDEN_TREE:
+				var t_ang := q_yaw + PI * (0.5 if _hash2(gx, gz, 62) > 0.5 else -0.5) + (_hash2(gx, gz, 63) - 0.5) * 0.7
+				var t_dist := s * (0.88 + _hash2(gx, gz, 64) * 0.25)
+				var tx := wx + cos(t_ang) * t_dist
+				var tz := wz + sin(t_ang) * t_dist
+				if not (rail_ref and rail_ref.is_near_railway(Vector2(tx, tz), 0.026, 0.044)):
+					var twy: float = world_ref.sample_elevation_m(tx, tz) * land_scale - 0.0018
+					var ts := 0.0058 + _hash2(gx, gz, 65) * 0.0032
+					var t_tint := 0.76 + _hash2(gx, gz, 66) * 0.24
+					var tcol := Color(0.58 * t_tint, 0.76 * t_tint, 0.46 * t_tint)
+					var txf := Transform3D(Basis(Vector3.UP, _hash2(gx, gz, 67) * TAU).scaled(Vector3(ts, ts * (0.90 + _hash2(gx, gz, 68) * 0.22), ts)), Vector3(tx, twy, tz))
+					gt_mm.set_instance_transform(gt_cnt, txf)
+					gt_mm.set_instance_color(gt_cnt, tcol)
+					gt_cnt += 1
+
 	th_mm.visible_instance_count = th_cnt
 	mn_mm.visible_instance_count = mn_cnt
 	vl_mm.visible_instance_count = vl_cnt
 	ch_mm.visible_instance_count = ch_cnt
 	cr_mm.visible_instance_count = cr_cnt
 	pl_mm.visible_instance_count = pl_cnt
+	yd_mm.visible_instance_count = yd_cnt
+	gs_mm.visible_instance_count = gs_cnt
+	gt_mm.visible_instance_count = gt_cnt
